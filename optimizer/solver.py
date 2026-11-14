@@ -66,6 +66,43 @@ def generate_schedule(
             ) <= employee.max_hours
         )
 
+    # Calculate the total assigned hours for each employee.
+    employee_hours = {}
+
+    for employee in employees:
+        employee_hours[employee.id] = sum(
+            (shift.end_hour - shift.start_hour)
+            * assignments[(employee.id, shift.id)]
+            for shift in shifts
+        )
+
+    # Find the highest and lowest assigned working hours.
+    max_possible_hours = sum(
+        shift.end_hour - shift.start_hour
+        for shift in shifts
+    )
+
+    maximum_hours = model.new_int_var(
+        0, max_possible_hours, "maximum_assigned_hours"
+    )
+
+    minimum_hours = model.new_int_var(
+        0, max_possible_hours, "minimum_assigned_hours"
+    )
+
+    model.add_max_equality(
+        maximum_hours,
+        list(employee_hours.values())
+    )
+
+    model.add_min_equality(
+        minimum_hours,
+        list(employee_hours.values())
+    )
+
+    # Minimize the difference between maximum and minimum hours.
+    model.minimize(maximum_hours - minimum_hours)
+
     # Create the solver and search for a valid schedule.
     solver = cp_model.CpSolver()
     status = solver.solve(model)
@@ -101,14 +138,31 @@ def generate_schedule(
                 ) == 1
             ]
 
+        # Display the total assigned hours for each employee.
+        print("\nEmployee workload summary:")
+
+        for employee in employees:
+            total_hours = solver.value(employee_hours[employee.id])
+
+            print(
+                f"{employee.name}: "
+                f"{total_hours}/{employee.max_hours} hours"
+            )
+
+        # Display the optimized fairness gap.
+        fairness_gap = solver.value(maximum_hours - minimum_hours)
+
+        print(f"\nFairness gap: {fairness_gap} hours")
+
+        # Return the generated schedule.
         return ScheduleResult(
             status=status_name,
             assignments=schedule,
         )
-    
+
     else:
         print(f"Scheduling ended with status: {status_name}")
-
+        
         return ScheduleResult(
             status=status_name,
             assignments=None,

@@ -156,3 +156,33 @@ def test_insufficient_qualified_staff():
 
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
+
+def test_workload_fairness():
+    # Generate an optimized schedule.
+    result = generate_schedule(employees, shifts)
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments is not None
+
+    schedule = result.assignments
+
+    # Calculate the assigned hours for each employee.
+    employee_hours = {}
+
+    for employee in employees:
+        total_hours = sum(
+            shift.end_hour - shift.start_hour
+            for shift in shifts
+            if employee.id in schedule[shift.id]
+        )
+
+        employee_hours[employee.id] = total_hours
+
+    # Calculate the difference between maximum and minimum hours.
+    fairness_gap = (
+        max(employee_hours.values())
+        - min(employee_hours.values())
+    )
+
+    # The optimal fairness gap for our current sample is 4 hours.
+    assert fairness_gap == 4
