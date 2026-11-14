@@ -186,3 +186,84 @@ def test_workload_fairness():
 
     # The optimal fairness gap for our current sample is 4 hours.
     assert fairness_gap == 4
+
+def test_employee_unavailability():
+    # Alice is only available on Monday.
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+            available_days=frozenset({0}),
+        ),
+        Employee(
+            id=2,
+            name="Bob",
+            skills=frozenset({"server"}),
+            max_hours=16,
+            available_days=frozenset({0, 1}),
+        ),
+    ]
+
+    # One shift on Monday and another on Tuesday.
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        ),
+        Shift(
+            id=2,
+            day=1,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        ),
+    ]
+
+    result = generate_schedule(test_employees, test_shifts)
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments is not None
+
+    # Alice must not be assigned to Tuesday.
+    assert 1 not in result.assignments[2]
+
+    # Bob must cover Tuesday because Alice is unavailable.
+    assert result.assignments[2] == [2]
+
+def test_unavailability_causes_infeasibility():
+    # Alice is only available on Monday.
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+            available_days=frozenset({0}),
+        )
+    ]
+
+    # The shift requires a server on Tuesday.
+    test_shifts = [
+        Shift(
+            id=1,
+            day=1,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        )
+    ]
+
+    # Attempt to generate a schedule.
+    result = generate_schedule(test_employees, test_shifts)
+
+    # The shift cannot be staffed.
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None

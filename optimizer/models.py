@@ -7,6 +7,7 @@ class Employee:
     name: str
     skills: frozenset[str]
     max_hours: int
+    available_days: frozenset[int] = frozenset(range(7))
 
 @dataclass(frozen=True)
 class Shift:

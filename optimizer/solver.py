@@ -1,6 +1,5 @@
 from ortools.sat.python import cp_model
 from optimizer.models import Employee, Shift, ScheduleResult
-from optimizer.sample_data import employees, shifts
 
 
 def generate_schedule(
@@ -24,6 +23,14 @@ def generate_schedule(
     for employee in employees:
         for shift in shifts:
             if shift.required_skill not in employee.skills:
+                model.add(
+                    assignments[(employee.id, shift.id)] == 0
+                )
+
+    # Prevent employees from working on unavailable days.
+    for employee in employees:
+        for shift in shifts:
+            if shift.day not in employee.available_days:
                 model.add(
                     assignments[(employee.id, shift.id)] == 0
                 )
@@ -108,25 +115,8 @@ def generate_schedule(
     status = solver.solve(model)
     status_name = solver.status_name(status)
 
-    # Check whether a valid schedule was found.
+    # Return the generated schedule without printing.
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        print("Valid schedule generated successfully!")
-
-        # Display employees assigned to each shift.
-        for shift in shifts:
-            print(
-                f"\nDay {shift.day}, "
-                f"{shift.start_hour}:00–{shift.end_hour}:00 "
-                f"({shift.required_skill})"
-            )
-
-            for employee in employees:
-                assignment = assignments[(employee.id, shift.id)]
-
-                if solver.value(assignment) == 1:
-                    print(f"  - {employee.name}")
-
-        # Store assignments so automated tests can check them.
         schedule = {}
 
         for shift in shifts:
@@ -138,36 +128,13 @@ def generate_schedule(
                 ) == 1
             ]
 
-        # Display the total assigned hours for each employee.
-        print("\nEmployee workload summary:")
-
-        for employee in employees:
-            total_hours = solver.value(employee_hours[employee.id])
-
-            print(
-                f"{employee.name}: "
-                f"{total_hours}/{employee.max_hours} hours"
-            )
-
-        # Display the optimized fairness gap.
-        fairness_gap = solver.value(maximum_hours - minimum_hours)
-
-        print(f"\nFairness gap: {fairness_gap} hours")
-
-        # Return the generated schedule.
         return ScheduleResult(
             status=status_name,
             assignments=schedule,
         )
 
-    else:
-        print(f"Scheduling ended with status: {status_name}")
-        
-        return ScheduleResult(
-            status=status_name,
-            assignments=None,
-        )
+    return ScheduleResult(
+        status=status_name,
+        assignments=None,
+    )
 
-
-if __name__ == "__main__":
-    generate_schedule(employees, shifts)
