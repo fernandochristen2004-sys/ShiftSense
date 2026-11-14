@@ -27,10 +27,26 @@ def generate_schedule(
                     assignments[(employee.id, shift.id)] == 0
                 )
 
-    # Prevent employees from working on unavailable days.
+    # Prevent assignments outside employee availability.
     for employee in employees:
         for shift in shifts:
-            if shift.day not in employee.available_days:
+
+            # Check whether the employee is available on this day.
+            available_on_day = shift.day in employee.available_days
+
+            # Check whether the shift fits an available time interval.
+            available_during_shift = (
+                employee.availability is None
+                or any(
+                    interval.day == shift.day
+                    and interval.start_hour <= shift.start_hour
+                    and interval.end_hour >= shift.end_hour
+                    for interval in employee.availability
+                )
+            )
+
+            # Both availability conditions must be satisfied.
+            if not (available_on_day and available_during_shift):
                 model.add(
                     assignments[(employee.id, shift.id)] == 0
                 )

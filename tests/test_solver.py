@@ -1,4 +1,4 @@
-from optimizer.models import Employee, Shift
+from optimizer.models import Employee, Shift, Availability
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule
 
@@ -265,5 +265,92 @@ def test_unavailability_causes_infeasibility():
     result = generate_schedule(test_employees, test_shifts)
 
     # The shift cannot be staffed.
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+def test_shift_within_available_hours():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+            availability=(
+                Availability(day=0, start_hour=9, end_hour=13),
+            ),
+        )
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=10,
+            end_hour=12,
+            required_staff=1,
+            required_skill="server",
+        )
+    ]
+
+    result = generate_schedule(test_employees, test_shifts)
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {1: [1]}
+
+def test_shift_partially_outside_availability():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+            availability=(
+                Availability(day=0, start_hour=9, end_hour=13),
+            ),
+        )
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=12,
+            end_hour=15,
+            required_staff=1,
+            required_skill="server",
+        )
+    ]
+
+    result = generate_schedule(test_employees, test_shifts)
+
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+def test_shift_without_matching_availability():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+            availability=(
+                Availability(day=0, start_hour=9, end_hour=13),
+            ),
+        )
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=1,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        )
+    ]
+
+    result = generate_schedule(test_employees, test_shifts)
+
     assert result.status == "INFEASIBLE"
     assert result.assignments is None

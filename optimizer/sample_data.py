@@ -1,4 +1,4 @@
-from optimizer.models import Employee, Shift
+from optimizer.models import Employee, Shift, Availability
 
 
 employees = [
@@ -7,12 +7,21 @@ employees = [
         name="Alice",
         skills=frozenset({"server", "cashier"}),
         max_hours=20,
+        availability=(
+            Availability(day=0, start_hour=9, end_hour=13),
+            Availability(day=1, start_hour=13, end_hour=17),
+            Availability(day=2, start_hour=9, end_hour=17),
+        ),
     ),
     Employee(
         id=2,
         name="Bob",
         skills=frozenset({"server"}),
         max_hours=16,
+        availability=(
+            Availability(day=0, start_hour=9, end_hour=13),
+            Availability(day=1, start_hour=9, end_hour=13),
+        ),
     ),
     Employee(
         id=3,
