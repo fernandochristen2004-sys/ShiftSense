@@ -1,11 +1,20 @@
 from ortools.sat.python import cp_model
 from optimizer.models import Employee, Shift, ScheduleResult
-
+from optimizer.repair import validate_original_schedule
 
 def generate_schedule(
     employees: list[Employee],
     shifts: list[Shift],
+    original_schedule: dict[int, list[int]] | None = None,
 ):
+
+    # Validate the original schedule before attempting repair.
+    if original_schedule is not None:
+        validate_original_schedule(
+            original_schedule,
+            employees,
+            shifts,
+        )
     
     # Create the constraint programming model.
     model = cp_model.CpModel()
@@ -123,8 +132,40 @@ def generate_schedule(
         list(employee_hours.values())
     )
 
-    # Minimize the difference between maximum and minimum hours.
-    model.minimize(maximum_hours - minimum_hours)
+    # Select the optimization objective.
+    if original_schedule is None:
+        # Normal generation: optimize workload fairness.
+        model.minimize(maximum_hours - minimum_hours)
+
+    else:
+        # Repair: minimize changes to the original schedule.
+        assignment_changes = []
+
+        for employee in employees:
+            for shift in shifts:
+                assignment = assignments[(employee.id, shift.id)]
+
+                originally_assigned = (
+                    employee.id in original_schedule[shift.id]
+                )
+
+                if originally_assigned:
+                    # Removing an existing assignment counts as one change.
+                    assignment_changes.append(1 - assignment)
+                else:
+                    # Adding a new assignment counts as one change.
+                    assignment_changes.append(assignment)
+
+        # Give minimizing disruption higher priority than fairness.
+        fairness_gap = maximum_hours - minimum_hours
+
+        # The fairness gap cannot exceed the total shift hours.
+        disruption_weight = max_possible_hours + 1
+
+        model.minimize(
+            disruption_weight * sum(assignment_changes)
+            + fairness_gap
+        )
 
     # Create the solver and search for a valid schedule.
     solver = cp_model.CpSolver()
