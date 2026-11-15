@@ -1,5 +1,5 @@
 from optimizer.repair import count_assignment_changes
-from optimizer.models import Employee, Shift, Availability
+from optimizer.models import Employee, Shift, Availability, SchedulingPolicy
 from optimizer.solver import generate_schedule
 import pytest
 
@@ -447,3 +447,93 @@ def test_repair_rejects_invalid_original_schedule(invalid_schedule):
             test_shifts,
             original_schedule=invalid_schedule,
         )
+
+def test_repair_with_no_shifts():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        )
+    ]
+
+    result = generate_schedule(
+        test_employees,
+        [],
+        original_schedule={},
+    )
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {}
+
+def test_repair_with_fairness_disabled():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        ),
+        Employee(
+            id=2,
+            name="Bob",
+            skills=frozenset({"server"}),
+            max_hours=16,
+            available_days=frozenset(),
+        ),
+        Employee(
+            id=3,
+            name="Charlie",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        ),
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        ),
+        Shift(
+            id=2,
+            day=1,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        ),
+    ]
+
+    original_schedule = {
+        1: [2],
+        2: [1],
+    }
+
+    policy = SchedulingPolicy(fairness_enabled=False)
+
+    result = generate_schedule(
+        test_employees,
+        test_shifts,
+        original_schedule=original_schedule,
+        policy=policy,
+    )
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments is not None
+
+    # Alice's existing assignment must be preserved.
+    assert result.assignments[2] == [1]
+
+    # Bob must be replaced.
+    assert result.assignments[1] == [3]
+
+    # One removal and one addition.
+    assert count_assignment_changes(
+        original_schedule,
+        result.assignments,
+    ) == 2

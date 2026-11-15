@@ -1,12 +1,43 @@
 from ortools.sat.python import cp_model
-from optimizer.models import Employee, Shift, ScheduleResult
+from optimizer.models import Employee, Shift, ScheduleResult, SchedulingPolicy
 from optimizer.repair import validate_original_schedule
+from optimizer.input_validator import validate_scheduling_inputs
+
+def shifts_violate_minimum_rest(
+    first_shift: Shift,
+    second_shift: Shift,
+    minimum_rest_hours: int,
+) -> bool:
+    """Check whether two non-overlapping shifts violate minimum rest."""
+
+    first_start = first_shift.day * 24 + first_shift.start_hour
+    first_end = first_shift.day * 24 + first_shift.end_hour
+
+    second_start = second_shift.day * 24 + second_shift.start_hour
+    second_end = second_shift.day * 24 + second_shift.end_hour
+
+    # Put the shifts in chronological order.
+    if first_start > second_start:
+        first_start, second_start = second_start, first_start
+        first_end, second_end = second_end, first_end
+
+    # Overlapping shifts are handled by a separate constraint.
+    if first_end > second_start:
+        return False
+
+    rest_hours = second_start - first_end
+
+    return rest_hours < minimum_rest_hours
 
 def generate_schedule(
     employees: list[Employee],
     shifts: list[Shift],
     original_schedule: dict[int, list[int]] | None = None,
+    policy: SchedulingPolicy | None = None,
 ):
+        
+    # Validate the complete scheduling dataset.
+    validate_scheduling_inputs(employees, shifts)
 
     # Validate the original schedule before attempting repair.
     if original_schedule is not None:
@@ -15,7 +46,18 @@ def generate_schedule(
             employees,
             shifts,
         )
-    
+
+    # No optimization is needed when there are no shifts.
+    if not shifts:
+        return ScheduleResult(
+            status="OPTIMAL",
+            assignments={},
+        )
+
+    # Use the default scheduling policy if none is provided.
+    if policy is None:
+        policy = SchedulingPolicy()
+
     # Create the constraint programming model.
     model = cp_model.CpModel()
 
@@ -88,6 +130,25 @@ def generate_schedule(
                         <= 1
                     )
 
+    # Enforce the configured minimum rest between shifts.
+    if policy.enforce_minimum_rest:
+        for employee in employees:
+            for first_index, first_shift in enumerate(shifts):
+                for second_shift in shifts[first_index + 1:]:
+
+                    violates_rest = shifts_violate_minimum_rest(
+                        first_shift,
+                        second_shift,
+                        policy.minimum_rest_hours,
+                    )
+
+                    if violates_rest:
+                        model.add(
+                            assignments[(employee.id, first_shift.id)]
+                            + assignments[(employee.id, second_shift.id)]
+                            <= 1
+                        )
+
     # Ensure employees do not exceed their maximum working hours.
     for employee in employees:
         model.add(
@@ -134,8 +195,9 @@ def generate_schedule(
 
     # Select the optimization objective.
     if original_schedule is None:
-        # Normal generation: optimize workload fairness.
-        model.minimize(maximum_hours - minimum_hours)
+        # Only optimize fairness when enabled.
+        if policy.fairness_enabled:
+            model.minimize(maximum_hours - minimum_hours)
 
     else:
         # Repair: minimize changes to the original schedule.
@@ -156,16 +218,19 @@ def generate_schedule(
                     # Adding a new assignment counts as one change.
                     assignment_changes.append(assignment)
 
-        # Give minimizing disruption higher priority than fairness.
-        fairness_gap = maximum_hours - minimum_hours
+        # Minimize disruption, with optional fairness as a tie-breaker.
+        total_changes = sum(assignment_changes)
 
-        # The fairness gap cannot exceed the total shift hours.
-        disruption_weight = max_possible_hours + 1
+        if policy.fairness_enabled:
+            fairness_gap = maximum_hours - minimum_hours
+            disruption_weight = max_possible_hours + 1
 
-        model.minimize(
-            disruption_weight * sum(assignment_changes)
-            + fairness_gap
-        )
+            model.minimize(
+                disruption_weight * total_changes
+                + fairness_gap
+            )
+        else:
+            model.minimize(total_changes)
 
     # Create the solver and search for a valid schedule.
     solver = cp_model.CpSolver()

@@ -1,7 +1,7 @@
-from optimizer.models import Employee, Shift, Availability
+from optimizer.models import Employee, Shift, Availability, SchedulingPolicy
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule
-
+from optimizer.solver import shifts_violate_minimum_rest
 
 def test_staffing_coverage():
     result = generate_schedule(employees, shifts)
@@ -354,3 +354,217 @@ def test_shift_without_matching_availability():
 
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
+
+def test_generate_schedule_with_no_shifts():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        )
+    ]
+
+    result = generate_schedule(test_employees, [])
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {}
+
+def test_solver_accepts_custom_policy():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        )
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        )
+    ]
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+        fairness_enabled=True,
+    )
+
+    result = generate_schedule(
+        test_employees,
+        test_shifts,
+        policy=policy,
+    )
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {1: [1]}
+
+def test_minimum_rest_violation():
+    evening_shift = Shift(
+        id=1,
+        day=0,
+        start_hour=17,
+        end_hour=23,
+        required_staff=1,
+        required_skill="server",
+    )
+
+    morning_shift = Shift(
+        id=2,
+        day=1,
+        start_hour=7,
+        end_hour=11,
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert shifts_violate_minimum_rest(
+        evening_shift,
+        morning_shift,
+        minimum_rest_hours=11,
+    ) is True
+
+    assert shifts_violate_minimum_rest(
+        evening_shift,
+        morning_shift,
+        minimum_rest_hours=8,
+    ) is False
+
+def test_solver_enforces_minimum_rest():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        )
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=17,
+            end_hour=23,
+            required_staff=1,
+            required_skill="server",
+        ),
+        Shift(
+            id=2,
+            day=1,
+            start_hour=7,
+            end_hour=11,
+            required_staff=1,
+            required_skill="server",
+        ),
+    ]
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+    )
+
+    result = generate_schedule(
+        test_employees,
+        test_shifts,
+        policy=policy,
+    )
+
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+def test_solver_allows_sufficient_rest():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        )
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=17,
+            end_hour=23,
+            required_staff=1,
+            required_skill="server",
+        ),
+        Shift(
+            id=2,
+            day=1,
+            start_hour=10,
+            end_hour=14,
+            required_staff=1,
+            required_skill="server",
+        ),
+    ]
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+    )
+
+    result = generate_schedule(
+        test_employees,
+        test_shifts,
+        policy=policy,
+    )
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {
+        1: [1],
+        2: [1],
+    }
+
+def test_solver_with_fairness_disabled():
+    test_employees = [
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        ),
+        Employee(
+            id=2,
+            name="Bob",
+            skills=frozenset({"server"}),
+            max_hours=16,
+        ),
+    ]
+
+    test_shifts = [
+        Shift(
+            id=1,
+            day=0,
+            start_hour=9,
+            end_hour=13,
+            required_staff=1,
+            required_skill="server",
+        )
+    ]
+
+    policy = SchedulingPolicy(
+        fairness_enabled=False,
+    )
+
+    result = generate_schedule(
+        test_employees,
+        test_shifts,
+        policy=policy,
+    )
+
+    assert result.status in ("OPTIMAL", "FEASIBLE")
+    assert result.assignments is not None
+
+    # The shift must still have exactly one employee.
+    assert len(result.assignments[1]) == 1
