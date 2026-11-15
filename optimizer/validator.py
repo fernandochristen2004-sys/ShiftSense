@@ -1,5 +1,5 @@
 from optimizer.models import Employee, Shift, SchedulingPolicy
-from optimizer.solver import shifts_violate_minimum_rest
+from optimizer.timeutils import shifts_violate_minimum_rest
 
 def validate_schedule(
     employees: list[Employee],
