@@ -1,7 +1,40 @@
-from optimizer.models import Employee, Shift, Availability, SchedulingPolicy
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
 from optimizer.sample_data import employees, shifts
-from optimizer.solver import generate_schedule
-from optimizer.solver import shifts_violate_minimum_rest
+from optimizer.solver import generate_schedule, get_shift_duration_minutes
+from optimizer.solver import shifts_overlap, shifts_violate_rest
+from optimizer.validator import validate_schedule
+from datetime import datetime, timedelta, timezone
+
+def make_shift(
+    shift_id: int,
+    day: int,
+    start_hour: int,
+    end_hour: int,
+    required_staff: int,
+    required_skill: str,
+) -> DateTimeShift:
+    """Create a datetime shift for solver tests."""
+
+    base_date = datetime(2026, 11, 23, tzinfo=timezone.utc)
+
+    return DateTimeShift(
+        id=shift_id,
+        starts_at=base_date + timedelta(days=day, hours=start_hour),
+        ends_at=base_date + timedelta(days=day, hours=end_hour),
+        required_staff=required_staff,
+        required_skill=required_skill,
+    )
+
+
+def available_interval(start_day: int, start_hour: int,
+                       end_day: int, end_hour: int):
+    """Concrete UTC availability interval for migration tests."""
+    base = datetime(2026, 11, 23, tzinfo=timezone.utc)
+    return (
+        base + timedelta(days=start_day, hours=start_hour),
+        base + timedelta(days=end_day, hours=end_hour),
+    )
+
 
 def test_staffing_coverage():
     result = generate_schedule(employees, shifts)
@@ -55,107 +88,57 @@ def test_no_overlapping_shifts():
                 works_first = employee.id in schedule[first_shift.id]
                 works_second = employee.id in schedule[second_shift.id]
 
-                # Check whether the shifts overlap.
-                same_day = first_shift.day == second_shift.day
-
                 overlaps = (
-                    first_shift.start_hour < second_shift.end_hour
-                    and second_shift.start_hour < first_shift.end_hour
+                    first_shift.starts_at < second_shift.ends_at
+                    and second_shift.starts_at < first_shift.ends_at
                 )
 
                 # An employee cannot work both overlapping shifts.
-                if same_day and overlaps:
+                if overlaps:
                     assert not (works_first and works_second)
 
 def test_maximum_working_hours():
     result = generate_schedule(employees, shifts)
-    
     assert result.status in ("OPTIMAL", "FEASIBLE")
     assert result.assignments is not None
-    
-    schedule = result.assignments
 
-    # Calculate the total assigned hours for each employee.
     for employee in employees:
-        total_hours = 0
+        total_minutes = sum(
+            int((shift.ends_at - shift.starts_at).total_seconds() // 60)
+            for shift in shifts
+            if employee.id in result.assignments[shift.id]
+        )
+        assert total_minutes <= employee.max_hours * 60
 
-        for shift in shifts:
-            if employee.id in schedule[shift.id]:
-                shift_duration = shift.end_hour - shift.start_hour
-                total_hours += shift_duration
-
-        # Employees must not exceed their maximum working hours.
-        assert total_hours <= employee.max_hours
 
 def test_actual_overlapping_shifts():
-    # Create one employee qualified for both shifts.
-    test_employees = [
-        Employee(
-            id=1,
-            name="Alice",
-            skills=frozenset({"server"}),
-            max_hours=16,
-        )
-    ]
-
-    # Create two overlapping shifts.
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 9, 0, 16),),
+    )]
     test_shifts = [
-        Shift(
-            id=1,
-            day=0,
-            start_hour=9,
-            end_hour=13,
-            required_staff=1,
-            required_skill="server",
-        ),
-        Shift(
-            id=2,
-            day=0,
-            start_hour=12,
-            end_hour=16,
-            required_staff=1,
-            required_skill="server",
-        ),
+        make_shift(1, 0, 9, 13, 1, "server"),
+        make_shift(2, 0, 12, 16, 1, "server"),
     ]
-
     result = generate_schedule(test_employees, test_shifts)
-
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
+
 
 def test_insufficient_qualified_staff():
-    # Create two employees with different qualifications.
     test_employees = [
-        Employee(
-            id=1,
-            name="Alice",
-            skills=frozenset({"server"}),
-            max_hours=16,
-        ),
-        Employee(
-            id=2,
-            name="Bob",
-            skills=frozenset({"cashier"}),
-            max_hours=16,
-        ),
+        Employee(id=1, name="Alice", skills=frozenset({"server"}),
+                 max_hours=16,
+                 datetime_availability=(available_interval(0, 9, 0, 13),)),
+        Employee(id=2, name="Bob", skills=frozenset({"cashier"}),
+                 max_hours=16,
+                 datetime_availability=(available_interval(0, 9, 0, 13),)),
     ]
-
-    # This shift requires two servers.
-    test_shifts = [
-        Shift(
-            id=1,
-            day=0,
-            start_hour=9,
-            end_hour=13,
-            required_staff=2,
-            required_skill="server",
-        ),
-    ]
-
+    test_shifts = [make_shift(1, 0, 9, 13, 2, "server")]
     result = generate_schedule(test_employees, test_shifts)
-
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
+
 
 def test_workload_fairness():
     # Generate an optimized schedule.
@@ -171,7 +154,7 @@ def test_workload_fairness():
 
     for employee in employees:
         total_hours = sum(
-            shift.end_hour - shift.start_hour
+            (shift.ends_at - shift.starts_at).total_seconds() / 3600
             for shift in shifts
             if employee.id in schedule[shift.id]
         )
@@ -188,172 +171,69 @@ def test_workload_fairness():
     assert fairness_gap == 4
 
 def test_employee_unavailability():
-    # Alice is only available on Monday.
+    # Alice can only work Monday; Bob can work Monday or Tuesday.
     test_employees = [
-        Employee(
-            id=1,
-            name="Alice",
-            skills=frozenset({"server"}),
-            max_hours=16,
-            available_days=frozenset({0}),
-        ),
-        Employee(
-            id=2,
-            name="Bob",
-            skills=frozenset({"server"}),
-            max_hours=16,
-            available_days=frozenset({0, 1}),
-        ),
+        Employee(id=1, name="Alice", skills=frozenset({"server"}),
+                 max_hours=16,
+                 datetime_availability=(available_interval(0, 9, 0, 13),)),
+        Employee(id=2, name="Bob", skills=frozenset({"server"}),
+                 max_hours=16,
+                 datetime_availability=(available_interval(0, 9, 1, 13),)),
     ]
-
-    # One shift on Monday and another on Tuesday.
     test_shifts = [
-        Shift(
-            id=1,
-            day=0,
-            start_hour=9,
-            end_hour=13,
-            required_staff=1,
-            required_skill="server",
-        ),
-        Shift(
-            id=2,
-            day=1,
-            start_hour=9,
-            end_hour=13,
-            required_staff=1,
-            required_skill="server",
-        ),
+        make_shift(1, 0, 9, 13, 1, "server"),
+        make_shift(2, 1, 9, 13, 1, "server"),
     ]
-
     result = generate_schedule(test_employees, test_shifts)
-
     assert result.status == "OPTIMAL"
     assert result.assignments is not None
-
-    # Alice must not be assigned to Tuesday.
     assert 1 not in result.assignments[2]
-
-    # Bob must cover Tuesday because Alice is unavailable.
     assert result.assignments[2] == [2]
 
+
 def test_unavailability_causes_infeasibility():
-    # Alice is only available on Monday.
-    test_employees = [
-        Employee(
-            id=1,
-            name="Alice",
-            skills=frozenset({"server"}),
-            max_hours=16,
-            available_days=frozenset({0}),
-        )
-    ]
-
-    # The shift requires a server on Tuesday.
-    test_shifts = [
-        Shift(
-            id=1,
-            day=1,
-            start_hour=9,
-            end_hour=13,
-            required_staff=1,
-            required_skill="server",
-        )
-    ]
-
-    # Attempt to generate a schedule.
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 9, 0, 13),),
+    )]
+    test_shifts = [make_shift(1, 1, 9, 13, 1, "server")]
     result = generate_schedule(test_employees, test_shifts)
-
-    # The shift cannot be staffed.
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
 
+
 def test_shift_within_available_hours():
-    test_employees = [
-        Employee(
-            id=1,
-            name="Alice",
-            skills=frozenset({"server"}),
-            max_hours=16,
-            availability=(
-                Availability(day=0, start_hour=9, end_hour=13),
-            ),
-        )
-    ]
-
-    test_shifts = [
-        Shift(
-            id=1,
-            day=0,
-            start_hour=10,
-            end_hour=12,
-            required_staff=1,
-            required_skill="server",
-        )
-    ]
-
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 9, 0, 13),),
+    )]
+    test_shifts = [make_shift(1, 0, 10, 12, 1, "server")]
     result = generate_schedule(test_employees, test_shifts)
-
     assert result.status == "OPTIMAL"
     assert result.assignments == {1: [1]}
 
+
 def test_shift_partially_outside_availability():
-    test_employees = [
-        Employee(
-            id=1,
-            name="Alice",
-            skills=frozenset({"server"}),
-            max_hours=16,
-            availability=(
-                Availability(day=0, start_hour=9, end_hour=13),
-            ),
-        )
-    ]
-
-    test_shifts = [
-        Shift(
-            id=1,
-            day=0,
-            start_hour=12,
-            end_hour=15,
-            required_staff=1,
-            required_skill="server",
-        )
-    ]
-
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 9, 0, 13),),
+    )]
+    test_shifts = [make_shift(1, 0, 12, 15, 1, "server")]
     result = generate_schedule(test_employees, test_shifts)
-
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
+
 
 def test_shift_without_matching_availability():
-    test_employees = [
-        Employee(
-            id=1,
-            name="Alice",
-            skills=frozenset({"server"}),
-            max_hours=16,
-            availability=(
-                Availability(day=0, start_hour=9, end_hour=13),
-            ),
-        )
-    ]
-
-    test_shifts = [
-        Shift(
-            id=1,
-            day=1,
-            start_hour=9,
-            end_hour=13,
-            required_staff=1,
-            required_skill="server",
-        )
-    ]
-
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 9, 0, 13),),
+    )]
+    test_shifts = [make_shift(1, 1, 9, 13, 1, "server")]
     result = generate_schedule(test_employees, test_shifts)
-
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
+
 
 def test_generate_schedule_with_no_shifts():
     test_employees = [
@@ -371,96 +251,219 @@ def test_generate_schedule_with_no_shifts():
     assert result.assignments == {}
 
 def test_solver_accepts_custom_policy():
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 9, 0, 13),),
+    )]
+    test_shifts = [make_shift(1, 0, 9, 13, 1, "server")]
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11, enforce_minimum_rest=True,
+        fairness_enabled=True,
+    )
+    result = generate_schedule(test_employees, test_shifts, policy=policy)
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {1: [1]}
+
+
+def test_minimum_rest_violation():
+    evening_shift = make_shift(1, 0, 17, 23, 1, "server")
+    morning_shift = make_shift(2, 1, 7, 11, 1, "server")
+    assert shifts_violate_rest(evening_shift, morning_shift, 11) is True
+    assert shifts_violate_rest(evening_shift, morning_shift, 8) is False
+
+
+def test_solver_enforces_minimum_rest():
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 17, 1, 11),),
+    )]
+    test_shifts = [
+        make_shift(1, 0, 17, 23, 1, "server"),
+        make_shift(2, 1, 7, 11, 1, "server"),
+    ]
+    policy = SchedulingPolicy(minimum_rest_hours=11,
+                              enforce_minimum_rest=True)
+    result = generate_schedule(test_employees, test_shifts, policy=policy)
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+
+def test_solver_allows_sufficient_rest():
+    test_employees = [Employee(
+        id=1, name="Alice", skills=frozenset({"server"}), max_hours=16,
+        datetime_availability=(available_interval(0, 17, 1, 14),),
+    )]
+    test_shifts = [
+        make_shift(1, 0, 17, 23, 1, "server"),
+        make_shift(2, 1, 10, 14, 1, "server"),
+    ]
+    policy = SchedulingPolicy(minimum_rest_hours=11,
+                              enforce_minimum_rest=True)
+    result = generate_schedule(test_employees, test_shifts, policy=policy)
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {1: [1], 2: [1]}
+
+
+def test_solver_with_fairness_disabled():
     test_employees = [
+        Employee(id=1, name="Alice", skills=frozenset({"server"}),
+                 max_hours=16,
+                 datetime_availability=(available_interval(0, 9, 0, 13),)),
+        Employee(id=2, name="Bob", skills=frozenset({"server"}),
+                 max_hours=16,
+                 datetime_availability=(available_interval(0, 9, 0, 13),)),
+    ]
+    test_shifts = [make_shift(1, 0, 9, 13, 1, "server")]
+    policy = SchedulingPolicy(fairness_enabled=False)
+    result = generate_schedule(test_employees, test_shifts, policy=policy)
+    assert result.status in ("OPTIMAL", "FEASIBLE")
+    assert result.assignments is not None
+    assert len(result.assignments[1]) == 1
+
+
+def test_get_shift_duration_minutes():
+    shift = DateTimeShift(
+        id=100,
+        starts_at=datetime(
+            2026, 11, 21, 20, 30,
+            tzinfo=timezone.utc,
+        ),
+        ends_at=datetime(
+            2026, 11, 22, 2, 15,
+            tzinfo=timezone.utc,
+        ),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert get_shift_duration_minutes(shift) == 345
+
+def test_solver_datetime_shifts_overlap():
+    first = DateTimeShift(
+        id=1,
+        starts_at=datetime(
+            2026, 11, 21, 20, 0,
+            tzinfo=timezone.utc,
+        ),
+        ends_at=datetime(
+            2026, 11, 22, 2, 0,
+            tzinfo=timezone.utc,
+        ),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    second = DateTimeShift(
+        id=2,
+        starts_at=datetime(
+            2026, 11, 22, 1, 0,
+            tzinfo=timezone.utc,
+        ),
+        ends_at=datetime(
+            2026, 11, 22, 5, 0,
+            tzinfo=timezone.utc,
+        ),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert shifts_overlap(first, second)
+
+def test_solver_datetime_minimum_rest_helper():
+    first = DateTimeShift(
+        id=1,
+        starts_at=datetime(
+            2026, 11, 21, 20, 0,
+            tzinfo=timezone.utc,
+        ),
+        ends_at=datetime(
+            2026, 11, 22, 2, 0,
+            tzinfo=timezone.utc,
+        ),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    second = DateTimeShift(
+        id=2,
+        starts_at=datetime(
+            2026, 11, 22, 7, 0,
+            tzinfo=timezone.utc,
+        ),
+        ends_at=datetime(
+            2026, 11, 22, 11, 0,
+            tzinfo=timezone.utc,
+        ),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert shifts_violate_rest(first, second, 11)
+
+def test_solver_generates_datetime_schedule():
+    start = datetime(
+        2026, 11, 21, 20, 30,
+        tzinfo=timezone.utc,
+    )
+
+    end = datetime(
+        2026, 11, 22, 2, 15,
+        tzinfo=timezone.utc,
+    )
+
+    employees = [
         Employee(
             id=1,
             name="Alice",
             skills=frozenset({"server"}),
-            max_hours=16,
+            max_hours=8,
+            datetime_availability=((start, end),),
         )
     ]
 
-    test_shifts = [
-        Shift(
+    shifts = [
+        DateTimeShift(
             id=1,
-            day=0,
-            start_hour=9,
-            end_hour=13,
+            starts_at=start,
+            ends_at=end,
             required_staff=1,
             required_skill="server",
         )
     ]
 
-    policy = SchedulingPolicy(
-        minimum_rest_hours=11,
-        enforce_minimum_rest=True,
-        fairness_enabled=True,
-    )
-
-    result = generate_schedule(
-        test_employees,
-        test_shifts,
-        policy=policy,
-    )
+    result = generate_schedule(employees, shifts)
 
     assert result.status == "OPTIMAL"
     assert result.assignments == {1: [1]}
 
-def test_minimum_rest_violation():
-    evening_shift = Shift(
-        id=1,
-        day=0,
-        start_hour=17,
-        end_hour=23,
-        required_staff=1,
-        required_skill="server",
-    )
-
-    morning_shift = Shift(
-        id=2,
-        day=1,
-        start_hour=7,
-        end_hour=11,
-        required_staff=1,
-        required_skill="server",
-    )
-
-    assert shifts_violate_minimum_rest(
-        evening_shift,
-        morning_shift,
-        minimum_rest_hours=11,
-    ) is True
-
-    assert shifts_violate_minimum_rest(
-        evening_shift,
-        morning_shift,
-        minimum_rest_hours=8,
-    ) is False
-
-def test_solver_enforces_minimum_rest():
-    test_employees = [
+def test_solver_rejects_datetime_minimum_rest_violation():
+    employees = [
         Employee(
             id=1,
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 21, 17, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 22, 14, 0, tzinfo=timezone.utc),
+                ),
+            ),
         )
     ]
 
-    test_shifts = [
-        Shift(
+    shifts = [
+        DateTimeShift(
             id=1,
-            day=0,
-            start_hour=17,
-            end_hour=23,
+            starts_at=datetime(2026, 11, 21, 17, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 11, 21, 23, 0, tzinfo=timezone.utc),
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
+        DateTimeShift(
             id=2,
-            day=1,
-            start_hour=7,
-            end_hour=11,
+            starts_at=datetime(2026, 11, 22, 7, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 11, 22, 11, 0, tzinfo=timezone.utc),
             required_staff=1,
             required_skill="server",
         ),
@@ -472,38 +475,50 @@ def test_solver_enforces_minimum_rest():
     )
 
     result = generate_schedule(
-        test_employees,
-        test_shifts,
+        employees,
+        shifts,
         policy=policy,
     )
 
     assert result.status == "INFEASIBLE"
     assert result.assignments is None
 
-def test_solver_allows_sufficient_rest():
-    test_employees = [
+def test_solver_allows_exact_datetime_minimum_rest():
+    employees = [
         Employee(
             id=1,
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 21, 17, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 22, 17, 0, tzinfo=timezone.utc),
+                ),
+            ),
         )
     ]
 
-    test_shifts = [
-        Shift(
+    shifts = [
+        DateTimeShift(
             id=1,
-            day=0,
-            start_hour=17,
-            end_hour=23,
+            starts_at=datetime(
+                2026, 11, 21, 17, 0, tzinfo=timezone.utc
+            ),
+            ends_at=datetime(
+                2026, 11, 21, 23, 0, tzinfo=timezone.utc
+            ),
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
+        DateTimeShift(
             id=2,
-            day=1,
-            start_hour=10,
-            end_hour=14,
+            starts_at=datetime(
+                2026, 11, 22, 10, 0, tzinfo=timezone.utc
+            ),
+            ends_at=datetime(
+                2026, 11, 22, 14, 0, tzinfo=timezone.utc
+            ),
             required_staff=1,
             required_skill="server",
         ),
@@ -515,8 +530,8 @@ def test_solver_allows_sufficient_rest():
     )
 
     result = generate_schedule(
-        test_employees,
-        test_shifts,
+        employees,
+        shifts,
         policy=policy,
     )
 
@@ -526,45 +541,76 @@ def test_solver_allows_sufficient_rest():
         2: [1],
     }
 
-def test_solver_with_fairness_disabled():
-    test_employees = [
+def test_datetime_schedule_passes_independent_validator():
+    employees = [
         Employee(
             id=1,
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
-        ),
-        Employee(
-            id=2,
-            name="Bob",
-            skills=frozenset({"server"}),
-            max_hours=16,
-        ),
-    ]
-
-    test_shifts = [
-        Shift(
-            id=1,
-            day=0,
-            start_hour=9,
-            end_hour=13,
-            required_staff=1,
-            required_skill="server",
+            datetime_availability=(
+                (
+                    datetime(
+                        2026, 11, 21, 18, 0,
+                        tzinfo=timezone.utc,
+                    ),
+                    datetime(
+                        2026, 11, 22, 17, 0,
+                        tzinfo=timezone.utc,
+                    ),
+                ),
+            ),
         )
     ]
 
+    shifts = [
+        DateTimeShift(
+            id=1,
+            starts_at=datetime(
+                2026, 11, 21, 20, 0,
+                tzinfo=timezone.utc,
+            ),
+            ends_at=datetime(
+                2026, 11, 22, 2, 0,
+                tzinfo=timezone.utc,
+            ),
+            required_staff=1,
+            required_skill="server",
+        ),
+        DateTimeShift(
+            id=2,
+            starts_at=datetime(
+                2026, 11, 22, 13, 0,
+                tzinfo=timezone.utc,
+            ),
+            ends_at=datetime(
+                2026, 11, 22, 17, 0,
+                tzinfo=timezone.utc,
+            ),
+            required_staff=1,
+            required_skill="server",
+        ),
+    ]
+
     policy = SchedulingPolicy(
-        fairness_enabled=False,
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
     )
 
     result = generate_schedule(
-        test_employees,
-        test_shifts,
+        employees,
+        shifts,
         policy=policy,
     )
 
-    assert result.status in ("OPTIMAL", "FEASIBLE")
+    assert result.status == "OPTIMAL"
     assert result.assignments is not None
 
-    # The shift must still have exactly one employee.
-    assert len(result.assignments[1]) == 1
+    errors = validate_schedule(
+        employees,
+        shifts,
+        result.assignments,
+        policy=policy,
+    )
+
+    assert errors == []

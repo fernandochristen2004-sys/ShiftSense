@@ -1,5 +1,12 @@
-from optimizer.models import Employee, Shift, Availability
+from optimizer.models import Employee, DateTimeShift
+from datetime import datetime, timezone
 
+def sample_datetime(day: int, hour: int) -> datetime:
+    """Return a UTC datetime for a sample scheduling day."""
+    return datetime(
+        2026, 11, 23 + day, hour, 0,
+        tzinfo=timezone.utc,
+    )
 
 employees = [
     Employee(
@@ -7,10 +14,10 @@ employees = [
         name="Alice",
         skills=frozenset({"server", "cashier"}),
         max_hours=20,
-        availability=(
-            Availability(day=0, start_hour=9, end_hour=13),
-            Availability(day=1, start_hour=13, end_hour=17),
-            Availability(day=2, start_hour=9, end_hour=17),
+        datetime_availability=(
+            (sample_datetime(0, 9), sample_datetime(0, 13)),
+            (sample_datetime(1, 13), sample_datetime(1, 17)),
+            (sample_datetime(2, 9), sample_datetime(2, 17)),
         ),
     ),
     Employee(
@@ -18,9 +25,9 @@ employees = [
         name="Bob",
         skills=frozenset({"server"}),
         max_hours=16,
-        availability=(
-            Availability(day=0, start_hour=9, end_hour=13),
-            Availability(day=1, start_hour=9, end_hour=13),
+        datetime_availability=(
+            (sample_datetime(0, 9), sample_datetime(0, 13)),
+            (sample_datetime(1, 9), sample_datetime(1, 13)),
         ),
     ),
     Employee(
@@ -28,67 +35,76 @@ employees = [
         name="Charlie",
         skills=frozenset({"cashier"}),
         max_hours=16,
+        datetime_availability=(
+            (sample_datetime(0, 0), sample_datetime(1, 0)),
+            (sample_datetime(1, 0), sample_datetime(2, 0)),
+            (sample_datetime(2, 0), sample_datetime(3, 0)),
+        ),
     ),
     Employee(
         id=4,
         name="Diana",
         skills=frozenset({"server", "cashier"}),
         max_hours=20,
+        datetime_availability=(
+            (sample_datetime(0, 0), sample_datetime(1, 0)),
+            (sample_datetime(1, 0), sample_datetime(2, 0)),
+            (sample_datetime(2, 0), sample_datetime(3, 0)),
+        ),
     ),
     Employee(
         id=5,
         name="Ethan",
         skills=frozenset({"server"}),
         max_hours=12,
+        datetime_availability=(
+            (sample_datetime(0, 0), sample_datetime(1, 0)),
+            (sample_datetime(1, 0), sample_datetime(2, 0)),
+            (sample_datetime(2, 0), sample_datetime(3, 0)),
+        ),
     ),
 ]
 
 shifts = [
-    Shift(
+    DateTimeShift(
         id=1,
-        day=0,
-        start_hour=9,
-        end_hour=13,
+        starts_at=sample_datetime(0, 9),
+        ends_at=sample_datetime(0, 13),
         required_staff=2,
         required_skill="server",
     ),
-    Shift(
+    DateTimeShift(
         id=2,
-        day=0,
-        start_hour=13,
-        end_hour=17,
+        starts_at=sample_datetime(0, 13),
+        ends_at=sample_datetime(0, 17),
         required_staff=1,
         required_skill="cashier",
     ),
-    Shift(
+    DateTimeShift(
         id=3,
-        day=1,
-        start_hour=9,
-        end_hour=13,
+        starts_at=sample_datetime(1, 9),
+        ends_at=sample_datetime(1, 13),
         required_staff=2,
         required_skill="server",
     ),
-    Shift(
+    DateTimeShift(
         id=4,
-        day=1,
-        start_hour=13,
-        end_hour=17,
+        starts_at=sample_datetime(1, 13),
+        ends_at=sample_datetime(1, 17),
         required_staff=1,
         required_skill="cashier",
     ),
-    Shift(
+    DateTimeShift(
         id=5,
-        day=2,
-        start_hour=9,
-        end_hour=13,
+        starts_at=sample_datetime(2, 9),
+        ends_at=sample_datetime(2, 13),
         required_staff=2,
         required_skill="server",
     ),
-    Shift(
+    DateTimeShift(
         id=6,
-        day=2,
-        start_hour=13,
-        end_hour=17,
+        starts_at=sample_datetime(2, 13),
+        ends_at=sample_datetime(2, 17),
         required_staff=1,
         required_skill="cashier",
     ),
@@ -101,7 +117,7 @@ if __name__ == "__main__":
     for shift in shifts:
         print(
             f"Shift {shift.id}: "
-            f"Day {shift.day}, "
-            f"{shift.start_hour}:00–{shift.end_hour}:00, "
+            f"{shift.starts_at:%a %d %b %H:%M} – "
+            f"{shift.ends_at:%a %d %b %H:%M} UTC, "
             f"{shift.required_staff} {shift.required_skill}(s)"
         )

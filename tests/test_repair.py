@@ -1,7 +1,36 @@
 from optimizer.repair import count_assignment_changes
-from optimizer.models import Employee, Shift, Availability, SchedulingPolicy
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
 from optimizer.solver import generate_schedule
+from datetime import datetime, timedelta, timezone
 import pytest
+
+def make_shift(
+    shift_id: int,
+    day: int,
+    start_hour: int,
+    end_hour: int,
+    required_staff: int,
+    required_skill: str,
+) -> DateTimeShift:
+    """Create a datetime shift for repair tests."""
+
+    start = datetime(
+        2026, 11, 23,
+        tzinfo=timezone.utc,
+    ) + timedelta(days=day, hours=start_hour)
+
+    end = datetime(
+        2026, 11, 23,
+        tzinfo=timezone.utc,
+    ) + timedelta(days=day, hours=end_hour)
+
+    return DateTimeShift(
+        id=shift_id,
+        starts_at=start,
+        ends_at=end,
+        required_staff=required_staff,
+        required_skill=required_skill,
+    )
 
 def test_count_assignment_changes():
     original_schedule = {
@@ -29,20 +58,26 @@ def test_repair_employee_absence():
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 23, 13, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
         Employee(
             id=2,
             name="Bob",
             skills=frozenset({"server"}),
             max_hours=16,
-            available_days=frozenset(),
+            datetime_availability=(),
         ),
     ]
 
     # One shift requires a server.
     test_shifts = [
-        Shift(
-            id=1,
+        make_shift(
+            shift_id=1,
             day=0,
             start_hour=9,
             end_hour=13,
@@ -84,47 +119,65 @@ def test_repair_preserves_unaffected_assignments():
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 25, 13, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
         Employee(
             id=2,
             name="Bob",
             skills=frozenset({"server"}),
             max_hours=16,
-            available_days=frozenset(),
+            datetime_availability=(),
         ),
         Employee(
             id=3,
             name="Charlie",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 24, 9, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 24, 13, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
         Employee(
             id=4,
             name="Diana",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 25, 9, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 25, 13, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
     ]
 
     test_shifts = [
-        Shift(
-            id=1,
+        make_shift(
+            shift_id=1,
             day=0,
             start_hour=9,
             end_hour=13,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=2,
+        make_shift(
+            shift_id=2,
             day=1,
             start_hour=9,
             end_hour=13,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=3,
+        make_shift(
+            shift_id=3,
             day=2,
             start_hour=9,
             end_hour=13,
@@ -171,8 +224,11 @@ def test_repair_requires_multiple_assignment_changes():
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=4,
-            availability=(
-                Availability(day=0, start_hour=9, end_hour=17),
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 23, 17, 0, tzinfo=timezone.utc),
+                ),
             ),
         ),
         Employee(
@@ -180,39 +236,45 @@ def test_repair_requires_multiple_assignment_changes():
             name="Bob",
             skills=frozenset({"server"}),
             max_hours=8,
-            available_days=frozenset(),
+            datetime_availability=(),
         ),
         Employee(
             id=3,
             name="Charlie",
             skills=frozenset({"server"}),
             max_hours=8,
-            availability=(
-                Availability(day=0, start_hour=13, end_hour=17),
-                Availability(day=1, start_hour=9, end_hour=13),
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 13, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 23, 17, 0, tzinfo=timezone.utc),
+                ),
+                (
+                    datetime(2026, 11, 24, 9, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 24, 13, 0, tzinfo=timezone.utc),
+                ),
             ),
         ),
     ]
 
     test_shifts = [
-        Shift(
-            id=1,
+        make_shift(
+            shift_id=1,
             day=0,
             start_hour=9,
             end_hour=13,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=2,
+        make_shift(
+            shift_id=2,
             day=0,
             start_hour=13,
             end_hour=17,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=3,
+        make_shift(
+            shift_id=3,
             day=1,
             start_hour=9,
             end_hour=13,
@@ -259,41 +321,53 @@ def test_repair_uses_fairness_to_break_ties():
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=12,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
         Employee(
             id=2,
             name="Bob",
             skills=frozenset({"server"}),
             max_hours=12,
-            available_days=frozenset(),
+            datetime_availability=(),
         ),
         Employee(
             id=3,
             name="Charlie",
             skills=frozenset({"server"}),
             max_hours=12,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 26, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
     ]
 
     test_shifts = [
-        Shift(
-            id=1,
+        make_shift(
+            shift_id=1,
             day=0,
             start_hour=9,
             end_hour=13,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=2,
+        make_shift(
+            shift_id=2,
             day=1,
             start_hour=9,
             end_hour=13,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=3,
+        make_shift(
+            shift_id=3,
             day=2,
             start_hour=9,
             end_hour=13,
@@ -338,25 +412,37 @@ def test_repair_prioritizes_minimum_disruption():
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 27, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
         Employee(
             id=2,
             name="Bob",
             skills=frozenset({"server"}),
             max_hours=16,
-            available_days=frozenset(),
+            datetime_availability=(),
         ),
         Employee(
             id=3,
             name="Charlie",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 27, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
     ]
 
     test_shifts = [
-        Shift(
-            id=shift_id,
+        make_shift(
+            shift_id=shift_id,
             day=shift_id - 1,
             start_hour=9,
             end_hour=13,
@@ -413,26 +499,38 @@ def test_repair_rejects_invalid_original_schedule(invalid_schedule):
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 25, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
         Employee(
             id=2,
             name="Bob",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 25, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
     ]
 
     test_shifts = [
-        Shift(
-            id=1,
+        make_shift(
+            shift_id=1,
             day=0,
             start_hour=9,
             end_hour=13,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=2,
+        make_shift(
+            shift_id=2,
             day=1,
             start_hour=9,
             end_hour=13,
@@ -474,33 +572,45 @@ def test_repair_with_fairness_disabled():
             name="Alice",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 25, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
         Employee(
             id=2,
             name="Bob",
             skills=frozenset({"server"}),
             max_hours=16,
-            available_days=frozenset(),
+            datetime_availability=(),
         ),
         Employee(
             id=3,
             name="Charlie",
             skills=frozenset({"server"}),
             max_hours=16,
+            datetime_availability=(
+                (
+                    datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 11, 25, 0, 0, tzinfo=timezone.utc),
+                ),
+            ),
         ),
     ]
 
     test_shifts = [
-        Shift(
-            id=1,
+        make_shift(
+            shift_id=1,
             day=0,
             start_hour=9,
             end_hour=13,
             required_staff=1,
             required_skill="server",
         ),
-        Shift(
-            id=2,
+        make_shift(
+            shift_id=2,
             day=1,
             start_hour=9,
             end_hour=13,

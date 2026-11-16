@@ -14,11 +14,12 @@ def main():
     # Display the generated schedule.
     for shift in shifts:
         print(
-            f"\nDay {shift.day}, "
-            f"{shift.start_hour}:00–{shift.end_hour}:00 "
+            f"\nShift {shift.id}: "
+            f"{shift.starts_at:%a %d %b %H:%M} – "
+            f"{shift.ends_at:%a %d %b %H:%M} UTC "
             f"({shift.required_skill})"
         )
-
+    
         for employee in employees:
             if employee.id in result.assignments[shift.id]:
                 print(f"  - {employee.name}")
@@ -30,7 +31,7 @@ def main():
 
     for employee in employees:
         total_hours = sum(
-            shift.end_hour - shift.start_hour
+            (shift.ends_at - shift.starts_at).total_seconds() / 3600
             for shift in shifts
             if employee.id in result.assignments[shift.id]
         )
@@ -39,13 +40,13 @@ def main():
 
         print(
             f"{employee.name}: "
-            f"{total_hours}/{employee.max_hours} hours"
+            f"{total_hours:g}/{employee.max_hours} hours"
         )
 
     # Calculate the fairness gap.
     fairness_gap = max(assigned_hours) - min(assigned_hours)
 
-    print(f"\nFairness gap: {fairness_gap} hours")
+    print(f"\nFairness gap: {fairness_gap:g} hours")
 
 
 if __name__ == "__main__":

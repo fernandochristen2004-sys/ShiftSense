@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -7,8 +8,9 @@ class Employee:
     name: str
     skills: frozenset[str]
     max_hours: int
-    available_days: frozenset[int] = frozenset(range(7))
-    availability: tuple["Availability", ...] | None = None
+    datetime_availability: tuple[
+        tuple[datetime, datetime], ...
+    ] | None = None
 
     def __post_init__(self):
         if self.id <= 0:
@@ -22,17 +24,44 @@ class Employee:
                 "Maximum working hours cannot be negative."
             )
 
-        if not all(0 <= day <= 6 for day in self.available_days):
-            raise ValueError(
-                "Available days must be between 0 and 6."
-            )
+        if self.datetime_availability is not None:
+            for start, end in self.datetime_availability:
+                if not isinstance(start, datetime) or not isinstance(
+                    end, datetime
+                ):
+                    raise ValueError(
+                        "Availability boundaries must be datetimes."
+                    )
+
+                if (
+                    start.utcoffset() is None
+                    or end.utcoffset() is None
+                ):
+                    raise ValueError(
+                        "Availability must be timezone-aware."
+                    )
+
+                if (
+                    start.second != 0
+                    or start.microsecond != 0
+                    or end.second != 0
+                    or end.microsecond != 0
+                ):
+                    raise ValueError(
+                        "Availability must have minute precision."
+                    )
+
+                if end <= start:
+                    raise ValueError(
+                        "Availability end must be after start."
+                    )
+
 
 @dataclass(frozen=True)
-class Shift:
+class DateTimeShift:
     id: int
-    day: int
-    start_hour: int
-    end_hour: int
+    starts_at: datetime
+    ends_at: datetime
     required_staff: int
     required_skill: str
 
@@ -40,18 +69,36 @@ class Shift:
         if self.id <= 0:
             raise ValueError("Shift ID must be positive.")
 
-        if not 0 <= self.day <= 6:
-            raise ValueError("Shift day must be between 0 and 6.")
-
-        if not 0 <= self.start_hour < 24:
-            raise ValueError("Invalid shift start hour.")
-
-        if not 0 < self.end_hour <= 24:
-            raise ValueError("Invalid shift end hour.")
-
-        if self.start_hour >= self.end_hour:
+        if not isinstance(self.starts_at, datetime) or not isinstance(
+            self.ends_at, datetime
+        ):
             raise ValueError(
-                "Shift end hour must be after start hour."
+                "Shift boundaries must be datetimes."
+            )
+
+        if self.starts_at.utcoffset() is None:
+            raise ValueError(
+                "Shift start must be timezone-aware."
+            )
+
+        if self.ends_at.utcoffset() is None:
+            raise ValueError(
+                "Shift end must be timezone-aware."
+            )
+
+        if (
+            self.starts_at.second != 0
+            or self.starts_at.microsecond != 0
+            or self.ends_at.second != 0
+            or self.ends_at.microsecond != 0
+        ):
+            raise ValueError(
+                "Shift times must have minute precision."
+            )
+
+        if self.ends_at <= self.starts_at:
+            raise ValueError(
+                "Shift end must be after shift start."
             )
 
         if self.required_staff < 0:
@@ -64,37 +111,12 @@ class Shift:
                 "Required skill cannot be empty."
             )
 
-@dataclass(frozen=True)
-class Availability:
-    day: int
-    start_hour: int
-    end_hour: int
-
-    def __post_init__(self):
-        if not 0 <= self.day <= 6:
-            raise ValueError(
-                "Availability day must be between 0 and 6."
-            )
-
-        if not 0 <= self.start_hour < 24:
-            raise ValueError(
-                "Invalid availability start hour."
-            )
-
-        if not 0 < self.end_hour <= 24:
-            raise ValueError(
-                "Invalid availability end hour."
-            )
-
-        if self.start_hour >= self.end_hour:
-            raise ValueError(
-                "Availability end hour must be after start hour."
-            )
 
 @dataclass(frozen=True)
 class ScheduleResult:
     status: str
     assignments: dict[int, list[int]] | None
+
 
 @dataclass(frozen=True)
 class SchedulingPolicy:

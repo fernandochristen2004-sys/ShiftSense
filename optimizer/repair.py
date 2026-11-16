@@ -1,4 +1,4 @@
-from optimizer.models import Employee, Shift
+from optimizer.models import Employee, DateTimeShift
 
 
 def count_assignment_changes(
@@ -22,10 +22,11 @@ def count_assignment_changes(
 
     return changes
 
+
 def validate_original_schedule(
     original_schedule: dict[int, list[int]],
     employees: list[Employee],
-    shifts: list[Shift],
+    shifts: list[DateTimeShift],
 ) -> None:
     """
     Validate the structure and references of an original schedule.

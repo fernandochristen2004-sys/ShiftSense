@@ -1,12 +1,42 @@
 from ortools.sat.python import cp_model
-from optimizer.models import Employee, Shift, ScheduleResult, SchedulingPolicy
+from optimizer.models import Employee, ScheduleResult, SchedulingPolicy, DateTimeShift
 from optimizer.repair import validate_original_schedule
 from optimizer.input_validator import validate_scheduling_inputs
-from optimizer.timeutils import shifts_violate_minimum_rest
+from optimizer.timeutils import (
+    datetime_shifts_overlap,
+    datetime_shifts_violate_minimum_rest,
+    shift_duration_minutes,
+    shift_fits_interval,
+)
+
+def get_shift_duration_minutes(
+    shift: DateTimeShift,
+) -> int:
+    """Calculate duration for a datetime shift."""
+    return shift_duration_minutes(shift)
+
+def shifts_overlap(
+    first: DateTimeShift,
+    second: DateTimeShift,
+) -> bool:
+    """Check whether two shifts overlap."""
+    return datetime_shifts_overlap(first, second)
+
+def shifts_violate_rest(
+    first: DateTimeShift,
+    second: DateTimeShift,
+    minimum_rest_hours: int,
+) -> bool:
+    """Check minimum rest between datetime shifts."""
+    return datetime_shifts_violate_minimum_rest(
+        first,
+        second,
+        minimum_rest_hours * 60,
+    )
 
 def generate_schedule(
     employees: list[Employee],
-    shifts: list[Shift],
+    shifts: list[DateTimeShift],
     original_schedule: dict[int, list[int]] | None = None,
     policy: SchedulingPolicy | None = None,
 ):
@@ -57,22 +87,16 @@ def generate_schedule(
     for employee in employees:
         for shift in shifts:
 
-            # Check whether the employee is available on this day.
-            available_on_day = shift.day in employee.available_days
-
-            # Check whether the shift fits an available time interval.
+            # Datetime shifts require concrete availability intervals.
             available_during_shift = (
-                employee.availability is None
-                or any(
-                    interval.day == shift.day
-                    and interval.start_hour <= shift.start_hour
-                    and interval.end_hour >= shift.end_hour
-                    for interval in employee.availability
+                employee.datetime_availability is not None
+                and any(
+                    shift_fits_interval(shift, start, end)
+                    for start, end in employee.datetime_availability
                 )
             )
 
-            # Both availability conditions must be satisfied.
-            if not (available_on_day and available_during_shift):
+            if not available_during_shift:
                 model.add(
                     assignments[(employee.id, shift.id)] == 0
                 )
@@ -91,14 +115,7 @@ def generate_schedule(
         for first_index, first_shift in enumerate(shifts):
             for second_shift in shifts[first_index + 1:]:
 
-                same_day = first_shift.day == second_shift.day
-
-                overlaps = (
-                    first_shift.start_hour < second_shift.end_hour
-                    and second_shift.start_hour < first_shift.end_hour
-                )
-
-                if same_day and overlaps:
+                if shifts_overlap(first_shift, second_shift):
                     model.add(
                         assignments[(employee.id, first_shift.id)]
                         + assignments[(employee.id, second_shift.id)]
@@ -111,7 +128,7 @@ def generate_schedule(
             for first_index, first_shift in enumerate(shifts):
                 for second_shift in shifts[first_index + 1:]:
 
-                    violates_rest = shifts_violate_minimum_rest(
+                    violates_rest = shifts_violate_rest(
                         first_shift,
                         second_shift,
                         policy.minimum_rest_hours,
@@ -128,51 +145,51 @@ def generate_schedule(
     for employee in employees:
         model.add(
             sum(
-                (shift.end_hour - shift.start_hour)
+                get_shift_duration_minutes(shift)
                 * assignments[(employee.id, shift.id)]
                 for shift in shifts
-            ) <= employee.max_hours
+            ) <= employee.max_hours * 60
         )
 
-    # Calculate the total assigned hours for each employee.
-    employee_hours = {}
+    # Calculate the total assigned minutes for each employee.
+    employee_minutes = {}
 
     for employee in employees:
-        employee_hours[employee.id] = sum(
-            (shift.end_hour - shift.start_hour)
+        employee_minutes[employee.id] = sum(
+            get_shift_duration_minutes(shift)
             * assignments[(employee.id, shift.id)]
             for shift in shifts
         )
 
-    # Find the highest and lowest assigned working hours.
-    max_possible_hours = sum(
-        shift.end_hour - shift.start_hour
+    # Find the highest and lowest assigned working minutes.
+    max_possible_minutes = sum(
+        get_shift_duration_minutes(shift)
         for shift in shifts
     )
 
-    maximum_hours = model.new_int_var(
-        0, max_possible_hours, "maximum_assigned_hours"
+    maximum_minutes = model.new_int_var(
+        0, max_possible_minutes, "maximum_assigned_minutes"
     )
 
-    minimum_hours = model.new_int_var(
-        0, max_possible_hours, "minimum_assigned_hours"
+    minimum_minutes = model.new_int_var(
+        0, max_possible_minutes, "minimum_assigned_minutes"
     )
 
     model.add_max_equality(
-        maximum_hours,
-        list(employee_hours.values())
+        maximum_minutes,
+        list(employee_minutes.values())
     )
 
     model.add_min_equality(
-        minimum_hours,
-        list(employee_hours.values())
+        minimum_minutes,
+        list(employee_minutes.values())
     )
 
     # Select the optimization objective.
     if original_schedule is None:
         # Only optimize fairness when enabled.
         if policy.fairness_enabled:
-            model.minimize(maximum_hours - minimum_hours)
+            model.minimize(maximum_minutes - minimum_minutes)
 
     else:
         # Repair: minimize changes to the original schedule.
@@ -197,8 +214,8 @@ def generate_schedule(
         total_changes = sum(assignment_changes)
 
         if policy.fairness_enabled:
-            fairness_gap = maximum_hours - minimum_hours
-            disruption_weight = max_possible_hours + 1
+            fairness_gap = maximum_minutes - minimum_minutes
+            disruption_weight = max_possible_minutes + 1
 
             model.minimize(
                 disruption_weight * total_changes

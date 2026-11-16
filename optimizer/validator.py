@@ -1,9 +1,14 @@
-from optimizer.models import Employee, Shift, SchedulingPolicy
-from optimizer.timeutils import shifts_violate_minimum_rest
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
+from optimizer.timeutils import (
+    datetime_shifts_overlap,
+    datetime_shifts_violate_minimum_rest,
+    shift_fits_interval,
+    shift_duration_minutes,
+)
 
 def validate_schedule(
     employees: list[Employee],
-    shifts: list[Shift],
+    shifts: list[DateTimeShift],
     schedule: dict[int, list[int]],
     policy: SchedulingPolicy | None = None,
 ) -> list[str]:
@@ -64,21 +69,17 @@ def validate_schedule(
                     f"'{shift.required_skill}'."
                 )
 
-            # Check whether the employee is available on this day.
-            available_on_day = shift.day in employee.available_days
-
-            # Check whether the entire shift fits an available interval.
-            available_during_shift = (
-                employee.availability is None
-                or any(
-                    interval.day == shift.day
-                    and interval.start_hour <= shift.start_hour
-                    and interval.end_hour >= shift.end_hour
-                    for interval in employee.availability
+            # Check employee availability.
+            # Check concrete datetime availability intervals.
+            available = (
+                employee.datetime_availability is not None
+                and any(
+                    shift_fits_interval(shift, start, end)
+                    for start, end in employee.datetime_availability
                 )
             )
 
-            if not (available_on_day and available_during_shift):
+            if not available:
                 errors.append(
                     f"Shift {shift.id}: employee {employee_id} "
                     "is unavailable during the assigned shift."
@@ -102,33 +103,31 @@ def validate_schedule(
                     continue
 
                 # Check whether the shifts overlap.
-                same_day = first_shift.day == second_shift.day
-
-                overlaps = (
-                    first_shift.start_hour < second_shift.end_hour
-                    and second_shift.start_hour < first_shift.end_hour
+                overlaps = datetime_shifts_overlap(
+                    first_shift,
+                    second_shift,
                 )
 
-                if same_day and overlaps:
+                if overlaps:
                     errors.append(
                         f"Employee {employee.id} has overlapping "
                         f"shifts {first_shift.id} and {second_shift.id}."
-                    )    
+                    )
 
     # Check whether employees exceed their maximum working hours.
     for employee in employees:
-        total_hours = 0
+        total_minutes = 0
 
         for shift in shifts:
             if employee.id in schedule.get(shift.id, []):
-                shift_duration = shift.end_hour - shift.start_hour
-                total_hours += shift_duration
+                shift_duration = shift_duration_minutes(shift)
+                total_minutes += shift_duration
 
-        if total_hours > employee.max_hours:
+        if total_minutes > employee.max_hours * 60:
             errors.append(
                 f"Employee {employee.id} exceeds maximum working hours: "
-                f"{total_hours} assigned, "
-                f"{employee.max_hours} allowed."
+                f"{total_minutes} minutes assigned, "
+                f"{employee.max_hours * 60} minutes allowed."
             )
 
     # Check minimum rest between assigned shifts.
@@ -148,11 +147,16 @@ def validate_schedule(
                     if not (works_first and works_second):
                         continue
 
-                    if shifts_violate_minimum_rest(
-                        first_shift,
-                        second_shift,
-                        policy.minimum_rest_hours,
-                    ):
+                    # Check minimum rest using the correct time model.
+                    violates_rest = (
+                        datetime_shifts_violate_minimum_rest(
+                            first_shift,
+                            second_shift,
+                            policy.minimum_rest_hours * 60,
+                        )
+                    )
+
+                    if violates_rest:
                         errors.append(
                             f"Employee {employee.id} violates minimum "
                             f"rest between shifts {first_shift.id} "
