@@ -1,7 +1,7 @@
 import pytest
 
 from datetime import datetime, timezone, time, date
-from optimizer.models import Employee, DateTimeShift, SchedulingPolicy, WeeklyAvailability, AvailabilityException, FixedAssignment
+from optimizer.models import Employee, DateTimeShift, SchedulingPolicy, WeeklyAvailability, AvailabilityException, FixedAssignment, ShiftRequirement
 from optimizer.input_validator import validate_scheduling_inputs
 
 
@@ -14,8 +14,7 @@ def make_shift(shift_id, day, start_hour, end_hour, required_staff, required_ski
         id=shift_id,
         starts_at=base + timedelta(days=day, hours=start_hour),
         ends_at=base + timedelta(days=day, hours=end_hour),
-        required_staff=required_staff,
-        required_skill=required_skill,
+        requirements=(ShiftRequirement(required_skill, required_staff),),
     )
 
 

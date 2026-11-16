@@ -222,14 +222,28 @@ class Employee:
                         "Availability end must be after start."
                     )
 
+@dataclass(frozen=True)
+class ShiftRequirement:
+    skill: str
+    count: int
+
+    def __post_init__(self):
+        if not isinstance(self.skill, str) or not self.skill.strip():
+            raise ValueError(
+                "Requirement skill cannot be empty."
+            )
+
+        if type(self.count) is not int or self.count < 0:
+            raise ValueError(
+                "Requirement count must be a non-negative integer."
+            )
 
 @dataclass(frozen=True)
 class DateTimeShift:
     id: int
     starts_at: datetime
     ends_at: datetime
-    required_staff: int
-    required_skill: str
+    requirements: tuple[ShiftRequirement, ...]
 
     def __post_init__(self):
         if self.id <= 0:
@@ -267,14 +281,29 @@ class DateTimeShift:
                 "Shift end must be after shift start."
             )
 
-        if self.required_staff < 0:
+        if (
+            not isinstance(self.requirements, tuple)
+            or not self.requirements
+        ):
             raise ValueError(
-                "Required staff cannot be negative."
+                "Shift must contain at least one requirement."
             )
 
-        if not self.required_skill.strip():
+        for requirement in self.requirements:
+            if not isinstance(requirement, ShiftRequirement):
+                raise ValueError(
+                    "Shift requirements must contain "
+                    "ShiftRequirement objects."
+                )
+
+        skills = [
+            requirement.skill
+            for requirement in self.requirements
+        ]
+
+        if len(skills) != len(set(skills)):
             raise ValueError(
-                "Required skill cannot be empty."
+                "Duplicate skills in shift requirements."
             )
 
 @dataclass(frozen=True)
@@ -296,7 +325,7 @@ class FixedAssignment:
 @dataclass(frozen=True)
 class ScheduleResult:
     status: str
-    assignments: dict[int, list[int]] | None
+    assignments: dict[int, dict[str, list[int]]] | None
 
 
 @dataclass(frozen=True)

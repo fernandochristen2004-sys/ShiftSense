@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
-from optimizer.models import DateTimeShift
+from optimizer.models import DateTimeShift, ShiftRequirement
 
 
 def test_datetime_shift_supports_overnight():
@@ -14,8 +14,7 @@ def test_datetime_shift_supports_overnight():
         ends_at=datetime(
             2026, 11, 22, 2, 15, tzinfo=timezone.utc
         ),
-        required_staff=2,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 2),),
     )
 
     duration = shift.ends_at - shift.starts_at
@@ -33,8 +32,7 @@ def test_datetime_shift_rejects_end_before_start():
             ends_at=datetime(
                 2026, 11, 21, 9, 0, tzinfo=timezone.utc
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         )
 
 
@@ -46,9 +44,9 @@ def test_datetime_shift_rejects_naive_datetime():
             ends_at=datetime(
                 2026, 11, 21, 17, 0, tzinfo=timezone.utc
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         )
+
 
 def test_datetime_shift_rejects_seconds():
     with pytest.raises(ValueError):
@@ -62,6 +60,5 @@ def test_datetime_shift_rejects_seconds():
                 2026, 11, 21, 17, 0,
                 tzinfo=timezone.utc,
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         )

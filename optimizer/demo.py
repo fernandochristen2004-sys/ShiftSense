@@ -16,13 +16,16 @@ def main():
         print(
             f"\nShift {shift.id}: "
             f"{shift.starts_at:%a %d %b %H:%M} – "
-            f"{shift.ends_at:%a %d %b %H:%M} UTC "
-            f"({shift.required_skill})"
+            f"{shift.ends_at:%a %d %b %H:%M} UTC"
         )
-    
-        for employee in employees:
-            if employee.id in result.assignments[shift.id]:
-                print(f"  - {employee.name}")
+
+        for requirement in shift.requirements:
+            skill = requirement.skill
+            print(f"  {skill}:")
+
+            for employee in employees:
+                if employee.id in result.assignments[shift.id][skill]:
+                    print(f"    - {employee.name}")
 
     # Display employee working hours.
     print("\nEmployee workload summary:")
@@ -33,7 +36,10 @@ def main():
         total_hours = sum(
             (shift.ends_at - shift.starts_at).total_seconds() / 3600
             for shift in shifts
-            if employee.id in result.assignments[shift.id]
+            if any(
+                employee.id in assigned_ids
+                for assigned_ids in result.assignments[shift.id].values()
+            )
         )
 
         assigned_hours.append(total_hours)

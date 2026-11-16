@@ -1,6 +1,6 @@
 import pytest
 
-from optimizer.models import DateTimeShift, WeeklyAvailability, AvailabilityException, Employee
+from optimizer.models import DateTimeShift, ShiftRequirement, WeeklyAvailability, AvailabilityException, Employee
 from optimizer.timeutils import (
     minutes_from_start,
     datetime_shifts_overlap,
@@ -42,16 +42,14 @@ def test_minimum_rest_calculation(
         id=1,
         starts_at=base + timedelta(days=first_day, hours=9),
         ends_at=base + timedelta(days=first_day, hours=first_end),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     second_shift = DateTimeShift(
         id=2,
         starts_at=base + timedelta(days=second_day, hours=second_start),
         ends_at=base + timedelta(days=second_day, hours=23),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     result = datetime_shifts_violate_minimum_rest(
@@ -111,8 +109,7 @@ def test_datetime_shifts_overlap():
             2026, 11, 22, 2, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     second = DateTimeShift(
@@ -125,8 +122,7 @@ def test_datetime_shifts_overlap():
             2026, 11, 22, 5, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert datetime_shifts_overlap(first, second)
@@ -155,8 +151,7 @@ def test_datetime_overlap_boundaries(
             2026, 11, 22, 2, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     second = DateTimeShift(
@@ -169,8 +164,7 @@ def test_datetime_overlap_boundaries(
             2026, 11, 22, second_end, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert datetime_shifts_overlap(first, second) is expected
@@ -200,8 +194,7 @@ def test_datetime_minimum_rest(
             2026, 11, 22, 2, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     second = DateTimeShift(
@@ -214,8 +207,7 @@ def test_datetime_minimum_rest(
             2026, 11, 22, 18, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert datetime_shifts_violate_minimum_rest(
@@ -236,8 +228,7 @@ def test_overnight_shift_duration_minutes():
             2026, 11, 22, 2, 15,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert shift_duration_minutes(shift) == 345
@@ -254,8 +245,7 @@ def test_datetime_shift_fits_availability_interval():
             2026, 11, 22, 2, 15,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     interval_start = datetime(
@@ -508,8 +498,7 @@ def test_employee_available_with_weekly_rule():
         id=1,
         starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert employee_is_available(employee, shift, timezone.utc)
@@ -533,8 +522,7 @@ def test_employee_unavailable_on_exception_date():
         id=1,
         starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert not employee_is_available(employee, shift, timezone.utc)
@@ -556,8 +544,7 @@ def test_employee_available_across_midnight():
         id=1,
         starts_at=datetime(2026, 11, 30, 21, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     # There is a one-hour availability gap from 23:00 to 00:00.
@@ -580,8 +567,7 @@ def test_employee_available_with_adjacent_intervals():
         id=1,
         starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert employee_is_available(employee, shift, timezone.utc)
@@ -603,8 +589,7 @@ def test_employee_legacy_datetime_availability():
         id=1,
         starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert employee_is_available(employee, shift, timezone.utc)
@@ -625,8 +610,7 @@ def test_overnight_shift_with_midnight_gap_is_unavailable():
         id=1,
         starts_at=datetime(2026, 11, 30, 21, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert not employee_is_available(
@@ -678,8 +662,7 @@ def test_overnight_weekly_availability_covers_next_day():
         id=1,
         starts_at=datetime(2026, 11, 30, 23, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 1, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert employee_is_available(employee, shift, timezone.utc)
@@ -703,8 +686,7 @@ def test_tuesday_day_off_blocks_monday_overnight_shift():
         id=1,
         starts_at=datetime(2026, 11, 30, 23, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 1, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert not employee_is_available(employee, shift, timezone.utc)
@@ -732,16 +714,14 @@ def test_tuesday_exception_can_shorten_overnight_availability():
         id=1,
         starts_at=datetime(2026, 11, 30, 22, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 1, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     rejected_shift = DateTimeShift(
         id=2,
         starts_at=datetime(2026, 11, 30, 22, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert employee_is_available(
@@ -863,16 +843,14 @@ def test_exception_only_employee_unavailable_on_other_dates():
         id=1,
         starts_at=datetime(2026, 11, 30, 9, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 30, 13, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     other_shift = DateTimeShift(
         id=2,
         starts_at=datetime(2026, 12, 1, 9, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 13, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert employee_is_available(employee, allowed_shift, timezone.utc)
@@ -894,8 +872,7 @@ def test_overnight_availability_ending_at_midnight():
         id=1,
         starts_at=datetime(2026, 11, 30, 20, tzinfo=timezone.utc),
         ends_at=datetime(2026, 12, 1, 0, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert employee_is_available(employee, shift, timezone.utc)

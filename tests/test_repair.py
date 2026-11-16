@@ -1,5 +1,5 @@
 from optimizer.repair import count_assignment_changes
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, ShiftRequirement
 from optimizer.solver import generate_schedule
 from datetime import datetime, timedelta, timezone
 import pytest
@@ -28,19 +28,18 @@ def make_shift(
         id=shift_id,
         starts_at=start,
         ends_at=end,
-        required_staff=required_staff,
-        required_skill=required_skill,
+        requirements=(ShiftRequirement(required_skill, required_staff),),
     )
 
 def test_count_assignment_changes():
     original_schedule = {
-        1: [2, 4],
-        2: [3],
+        1: {"server": [2, 4]},
+        2: {"server": [3]},
     }
 
     repaired_schedule = {
-        1: [1, 4],
-        2: [3],
+        1: {"server": [1, 4]},
+        2: {"server": [3]},
     }
 
     changes = count_assignment_changes(
@@ -88,7 +87,7 @@ def test_repair_employee_absence():
 
     # Bob was assigned before becoming unavailable.
     original_schedule = {
-        1: [2],
+        1: {"server": [2]},
     }
 
     # Repair the schedule using updated availability.
@@ -102,7 +101,7 @@ def test_repair_employee_absence():
     assert result.assignments is not None
 
     # Alice must replace Bob.
-    assert result.assignments == {1: [1]}
+    assert result.assignments == {1: {"server": [1]}}
 
     # Removing Bob and adding Alice counts as two changes.
     changes = count_assignment_changes(
@@ -188,9 +187,9 @@ def test_repair_preserves_unaffected_assignments():
 
     # Bob calls out, but Charlie and Diana should keep their shifts.
     original_schedule = {
-        1: [2],
-        2: [3],
-        3: [4],
+        1: {"server": [2]},
+        2: {"server": [3]},
+        3: {"server": [4]},
     }
 
     result = generate_schedule(
@@ -203,11 +202,11 @@ def test_repair_preserves_unaffected_assignments():
     assert result.assignments is not None
 
     # The original unaffected assignments must remain unchanged.
-    assert result.assignments[2] == [3]
-    assert result.assignments[3] == [4]
+    assert result.assignments[2]["server"] == [3]
+    assert result.assignments[3]["server"] == [4]
 
     # Alice should replace Bob.
-    assert result.assignments[1] == [1]
+    assert result.assignments[1]["server"] == [1]
 
     # Only Bob's removal and Alice's addition should be counted.
     changes = count_assignment_changes(
@@ -284,9 +283,9 @@ def test_repair_requires_multiple_assignment_changes():
     ]
 
     original_schedule = {
-        1: [2],
-        2: [1],
-        3: [3],
+        1: {"server": [2]},
+        2: {"server": [1]},
+        3: {"server": [3]},
     }
 
     result = generate_schedule(
@@ -299,13 +298,13 @@ def test_repair_requires_multiple_assignment_changes():
     assert result.assignments is not None
 
     # Alice moves to Monday morning.
-    assert result.assignments[1] == [1]
+    assert result.assignments[1]["server"] == [1]
 
     # Charlie takes Monday afternoon.
-    assert result.assignments[2] == [3]
+    assert result.assignments[2]["server"] == [3]
 
     # Charlie keeps Tuesday morning.
-    assert result.assignments[3] == [3]
+    assert result.assignments[3]["server"] == [3]
 
     changes = count_assignment_changes(
         original_schedule,
@@ -378,9 +377,9 @@ def test_repair_uses_fairness_to_break_ties():
 
     # Bob calls out of Shift 3.
     original_schedule = {
-        1: [1],
-        2: [1],
-        3: [2],
+        1: {"server": [1]},
+        2: {"server": [1]},
+        3: {"server": [2]},
     }
 
     result = generate_schedule(
@@ -393,11 +392,11 @@ def test_repair_uses_fairness_to_break_ties():
     assert result.assignments is not None
 
     # Alice keeps both existing shifts.
-    assert result.assignments[1] == [1]
-    assert result.assignments[2] == [1]
+    assert result.assignments[1]["server"] == [1]
+    assert result.assignments[2]["server"] == [1]
 
     # Charlie replaces Bob rather than giving Alice more hours.
-    assert result.assignments[3] == [3]
+    assert result.assignments[3]["server"] == [3]
 
     # Only Bob's removal and Charlie's addition are needed.
     assert count_assignment_changes(
@@ -454,10 +453,10 @@ def test_repair_prioritizes_minimum_disruption():
 
     # Bob calls out of Shift 4.
     original_schedule = {
-        1: [1],
-        2: [1],
-        3: [1],
-        4: [2],
+        1: {"server": [1]},
+        2: {"server": [1]},
+        3: {"server": [1]},
+        4: {"server": [2]},
     }
 
     result = generate_schedule(
@@ -470,12 +469,12 @@ def test_repair_prioritizes_minimum_disruption():
     assert result.assignments is not None
 
     # Alice keeps all three existing assignments.
-    assert result.assignments[1] == [1]
-    assert result.assignments[2] == [1]
-    assert result.assignments[3] == [1]
+    assert result.assignments[1]["server"] == [1]
+    assert result.assignments[2]["server"] == [1]
+    assert result.assignments[3]["server"] == [1]
 
     # Charlie replaces Bob.
-    assert result.assignments[4] == [3]
+    assert result.assignments[4]["server"] == [3]
 
     # Only one removal and one addition.
     assert count_assignment_changes(
@@ -486,10 +485,11 @@ def test_repair_prioritizes_minimum_disruption():
 @pytest.mark.parametrize(
     "invalid_schedule",
     [
-        {1: [1]},           # Missing shift 2
-        {1: [1], 2: [2], 3: []},  # Unexpected shift 3
-        {1: [1, 1], 2: [2]},     # Duplicate assignment
-        {1: [99], 2: [2]},      # Unknown employee
+        {1: {"server": [1]}},  # Missing shift 2
+        {1: {"server": [1]}, 2: {"server": [2]},
+         3: {"server": []}},  # Unexpected shift 3
+        {1: {"server": [1, 1]}, 2: {"server": [2]}},
+        {1: {"server": [99]}, 2: {"server": [2]}}
     ],
 )
 def test_repair_rejects_invalid_original_schedule(invalid_schedule):
@@ -620,8 +620,8 @@ def test_repair_with_fairness_disabled():
     ]
 
     original_schedule = {
-        1: [2],
-        2: [1],
+        1: {"server": [2]},
+        2: {"server": [1]},
     }
 
     policy = SchedulingPolicy(fairness_enabled=False)
@@ -637,10 +637,10 @@ def test_repair_with_fairness_disabled():
     assert result.assignments is not None
 
     # Alice's existing assignment must be preserved.
-    assert result.assignments[2] == [1]
+    assert result.assignments[2]["server"] == [1]
 
     # Bob must be replaced.
-    assert result.assignments[1] == [3]
+    assert result.assignments[1]["server"] == [3]
 
     # One removal and one addition.
     assert count_assignment_changes(

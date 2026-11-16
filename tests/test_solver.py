@@ -1,4 +1,4 @@
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException, FixedAssignment
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, ShiftRequirement, WeeklyAvailability, AvailabilityException, FixedAssignment
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule, get_shift_duration_minutes
 from optimizer.solver import shifts_overlap, shifts_violate_rest
@@ -21,8 +21,7 @@ def make_shift(
         id=shift_id,
         starts_at=base_date + timedelta(days=day, hours=start_hour),
         ends_at=base_date + timedelta(days=day, hours=end_hour),
-        required_staff=required_staff,
-        required_skill=required_skill,
+        requirements=(ShiftRequirement(required_skill, required_staff),),
     )
 
 
@@ -46,9 +45,9 @@ def test_staffing_coverage():
 
     # Check that every shift has the required number of employees.
     for shift in shifts:
-        assigned_employees = schedule[shift.id]
-
-        assert len(assigned_employees) == shift.required_staff
+        for requirement in shift.requirements:
+            assigned_employees = schedule[shift.id][requirement.skill]
+            assert len(assigned_employees) == requirement.count
 
 def test_employee_qualifications():
     result = generate_schedule(employees, shifts)
@@ -60,16 +59,17 @@ def test_employee_qualifications():
 
     # Check the qualifications of every assigned employee.
     for shift in shifts:
-        assigned_employee_ids = schedule[shift.id]
+        for requirement in shift.requirements:
+            assigned_employee_ids = schedule[shift.id][requirement.skill]
 
-        for employee_id in assigned_employee_ids:
-            employee = next(
-                employee
-                for employee in employees
-                if employee.id == employee_id
-            )
+            for employee_id in assigned_employee_ids:
+                employee = next(
+                    employee
+                    for employee in employees
+                    if employee.id == employee_id
+                )
 
-            assert shift.required_skill in employee.skills
+                assert requirement.skill in employee.skills
 
 def test_no_overlapping_shifts():
     result = generate_schedule(employees, shifts)
@@ -85,8 +85,8 @@ def test_no_overlapping_shifts():
             for second_shift in shifts[first_index + 1:]:
 
                 # Check whether the employee works both shifts.
-                works_first = employee.id in schedule[first_shift.id]
-                works_second = employee.id in schedule[second_shift.id]
+                works_first = any(employee.id in ids for ids in schedule[first_shift.id].values())
+                works_second = any(employee.id in ids for ids in schedule[second_shift.id].values())
 
                 overlaps = (
                     first_shift.starts_at < second_shift.ends_at
@@ -106,7 +106,7 @@ def test_maximum_working_hours():
         total_minutes = sum(
             int((shift.ends_at - shift.starts_at).total_seconds() // 60)
             for shift in shifts
-            if employee.id in result.assignments[shift.id]
+            if any(employee.id in ids for ids in result.assignments[shift.id].values())
         )
         assert total_minutes <= employee.max_hours * 60
 
@@ -156,7 +156,7 @@ def test_workload_fairness():
         total_hours = sum(
             (shift.ends_at - shift.starts_at).total_seconds() / 3600
             for shift in shifts
-            if employee.id in schedule[shift.id]
+            if any(employee.id in ids for ids in schedule[shift.id].values())
         )
 
         employee_hours[employee.id] = total_hours
@@ -187,8 +187,8 @@ def test_employee_unavailability():
     result = generate_schedule(test_employees, test_shifts)
     assert result.status == "OPTIMAL"
     assert result.assignments is not None
-    assert 1 not in result.assignments[2]
-    assert result.assignments[2] == [2]
+    assert 1 not in result.assignments[2]["server"]
+    assert result.assignments[2] == {"server": [2]}
 
 
 def test_unavailability_causes_infeasibility():
@@ -210,7 +210,7 @@ def test_shift_within_available_hours():
     test_shifts = [make_shift(1, 0, 10, 12, 1, "server")]
     result = generate_schedule(test_employees, test_shifts)
     assert result.status == "OPTIMAL"
-    assert result.assignments == {1: [1]}
+    assert result.assignments == {1: {"server": [1]}}
 
 
 def test_shift_partially_outside_availability():
@@ -262,7 +262,7 @@ def test_solver_accepts_custom_policy():
     )
     result = generate_schedule(test_employees, test_shifts, policy=policy)
     assert result.status == "OPTIMAL"
-    assert result.assignments == {1: [1]}
+    assert result.assignments == {1: {"server": [1]}}
 
 
 def test_minimum_rest_violation():
@@ -301,7 +301,7 @@ def test_solver_allows_sufficient_rest():
                               enforce_minimum_rest=True)
     result = generate_schedule(test_employees, test_shifts, policy=policy)
     assert result.status == "OPTIMAL"
-    assert result.assignments == {1: [1], 2: [1]}
+    assert result.assignments == {1: {"server": [1]}, 2: {"server": [1]}}
 
 
 def test_solver_with_fairness_disabled():
@@ -318,7 +318,7 @@ def test_solver_with_fairness_disabled():
     result = generate_schedule(test_employees, test_shifts, policy=policy)
     assert result.status in ("OPTIMAL", "FEASIBLE")
     assert result.assignments is not None
-    assert len(result.assignments[1]) == 1
+    assert len(result.assignments[1]["server"]) == 1
 
 
 def test_get_shift_duration_minutes():
@@ -332,8 +332,7 @@ def test_get_shift_duration_minutes():
             2026, 11, 22, 2, 15,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert get_shift_duration_minutes(shift) == 345
@@ -349,8 +348,7 @@ def test_solver_datetime_shifts_overlap():
             2026, 11, 22, 2, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     second = DateTimeShift(
@@ -363,8 +361,7 @@ def test_solver_datetime_shifts_overlap():
             2026, 11, 22, 5, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert shifts_overlap(first, second)
@@ -380,8 +377,7 @@ def test_solver_datetime_minimum_rest_helper():
             2026, 11, 22, 2, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     second = DateTimeShift(
@@ -394,8 +390,7 @@ def test_solver_datetime_minimum_rest_helper():
             2026, 11, 22, 11, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert shifts_violate_rest(first, second, 11)
@@ -426,15 +421,14 @@ def test_solver_generates_datetime_schedule():
             id=1,
             starts_at=start,
             ends_at=end,
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         )
     ]
 
     result = generate_schedule(employees, shifts)
 
     assert result.status == "OPTIMAL"
-    assert result.assignments == {1: [1]}
+    assert result.assignments == {1: {"server": [1]}}
 
 def test_solver_rejects_datetime_minimum_rest_violation():
     employees = [
@@ -457,15 +451,13 @@ def test_solver_rejects_datetime_minimum_rest_violation():
             id=1,
             starts_at=datetime(2026, 11, 21, 17, 0, tzinfo=timezone.utc),
             ends_at=datetime(2026, 11, 21, 23, 0, tzinfo=timezone.utc),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
         DateTimeShift(
             id=2,
             starts_at=datetime(2026, 11, 22, 7, 0, tzinfo=timezone.utc),
             ends_at=datetime(2026, 11, 22, 11, 0, tzinfo=timezone.utc),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     ]
 
@@ -508,8 +500,7 @@ def test_solver_allows_exact_datetime_minimum_rest():
             ends_at=datetime(
                 2026, 11, 21, 23, 0, tzinfo=timezone.utc
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
         DateTimeShift(
             id=2,
@@ -519,8 +510,7 @@ def test_solver_allows_exact_datetime_minimum_rest():
             ends_at=datetime(
                 2026, 11, 22, 14, 0, tzinfo=timezone.utc
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     ]
 
@@ -537,8 +527,8 @@ def test_solver_allows_exact_datetime_minimum_rest():
 
     assert result.status == "OPTIMAL"
     assert result.assignments == {
-        1: [1],
-        2: [1],
+        1: {"server": [1]},
+        2: {"server": [1]},
     }
 
 def test_datetime_schedule_passes_independent_validator():
@@ -574,8 +564,7 @@ def test_datetime_schedule_passes_independent_validator():
                 2026, 11, 22, 2, 0,
                 tzinfo=timezone.utc,
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
         DateTimeShift(
             id=2,
@@ -587,8 +576,7 @@ def test_datetime_schedule_passes_independent_validator():
                 2026, 11, 22, 17, 0,
                 tzinfo=timezone.utc,
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     ]
 
@@ -638,7 +626,7 @@ def test_solver_respects_weekly_availability():
     )
 
     assert monday_result.status == "OPTIMAL"
-    assert monday_result.assignments == {1: [1]}
+    assert monday_result.assignments == {1: {"server": [1]}}
 
     assert tuesday_result.status == "INFEASIBLE"
     assert tuesday_result.assignments is None
@@ -702,7 +690,7 @@ def test_solver_respects_exception_working_hours():
     assert morning_result.assignments is None
 
     assert afternoon_result.status == "OPTIMAL"
-    assert afternoon_result.assignments == {2: [1]}
+    assert afternoon_result.assignments == {2: {"server": [1]}}
 
 def test_solver_respects_scheduling_timezone():
     malaysia_timezone = timezone(timedelta(hours=8))
@@ -725,8 +713,7 @@ def test_solver_respects_scheduling_timezone():
         ends_at=datetime(
             2026, 11, 30, 5, tzinfo=timezone.utc
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     result = generate_schedule(
@@ -736,7 +723,7 @@ def test_solver_respects_scheduling_timezone():
     )
 
     assert result.status == "OPTIMAL"
-    assert result.assignments == {1: [1]}
+    assert result.assignments == {1: {"server": [1]}}
 
 
 def test_solver_rejects_shift_outside_local_availability():
@@ -760,8 +747,7 @@ def test_solver_rejects_shift_outside_local_availability():
         ends_at=datetime(
             2026, 11, 30, 13, tzinfo=timezone.utc
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     result = generate_schedule(
@@ -843,7 +829,7 @@ def test_outside_assignment_allows_exact_minimum_rest():
     )
 
     assert result.status == "OPTIMAL"
-    assert result.assignments == {1: [1]}
+    assert result.assignments == {1: {"server": [1]}}
 
 
 def test_future_outside_assignment_blocks_late_shift():

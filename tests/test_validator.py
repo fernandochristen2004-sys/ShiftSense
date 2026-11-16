@@ -1,4 +1,4 @@
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException, FixedAssignment
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException, FixedAssignment, ShiftRequirement
 from optimizer.validator import validate_schedule
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule
@@ -15,8 +15,7 @@ def make_shift(shift_id, day, start_hour, end_hour, required_staff, required_ski
         id=shift_id,
         starts_at=base + timedelta(days=day, hours=start_hour),
         ends_at=base + timedelta(days=day, hours=end_hour),
-        required_staff=required_staff,
-        required_skill=required_skill,
+        requirements=(ShiftRequirement(required_skill, required_staff),),
     )
 
 
@@ -42,7 +41,7 @@ def test_valid_schedule():
         make_shift(1, 0, 9, 13, 1, "server")
     ]
 
-    schedule = {1: [1]}
+    schedule = {1: {"server": [1]}}
 
     errors = validate_schedule(
         employees,
@@ -56,19 +55,19 @@ def test_valid_schedule():
     "schedule, expected_error",
     [
         (
-            {1: []},
+            {1: {"server": []}},
             "expected 1 employees, found 0",
         ),
         (
-            {1: [1, 1]},
+            {1: {"server": [1, 1]}},
             "duplicate employee assignments",
         ),
         (
-            {1: [99]},
+            {1: {"server": [99]}},
             "unknown employee 99",
         ),
         (
-            {2: [1]},
+            {2: {"server": [1]}},
             "missing or unexpected shifts",
         ),
     ],
@@ -114,7 +113,7 @@ def test_unqualified_employee():
         make_shift(1, 0, 9, 13, 1, "server")
     ]
 
-    schedule = {1: [1]}
+    schedule = {1: {"server": [1]}}
 
     errors = validate_schedule(
         employees,
@@ -142,7 +141,7 @@ def test_employee_outside_availability():
         make_shift(1, 0, 12, 16, 1, "server")
     ]
 
-    schedule = {1: [1]}
+    schedule = {1: {"server": [1]}}
 
     errors = validate_schedule(
         employees,
@@ -173,8 +172,8 @@ def test_employee_overlapping_shifts():
 
     # Alice is incorrectly assigned to both overlapping shifts.
     schedule = {
-        1: [1],
-        2: [1],
+        1: {"server": [1]},
+        2: {"server": [1]},
     }
 
     errors = validate_schedule(
@@ -206,9 +205,9 @@ def test_employee_exceeds_maximum_hours():
     ]
 
     schedule = {
-        1: [1],
-        2: [1],
-        3: [1],
+        1: {"server": [1]},
+        2: {"server": [1]},
+        3: {"server": [1]},
     }
 
     errors = validate_schedule(
@@ -272,8 +271,8 @@ def test_invalid_employee_data(employee_data):
         {"ends_at": datetime(2026, 11, 23, 13, 0)},
         {"ends_at": datetime(2026, 11, 23, 8, 0, tzinfo=timezone.utc)},
         {"ends_at": datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc)},
-        {"required_staff": -2},
-        {"required_skill": ""},
+        {"requirements": (ShiftRequirement("server", 1), ShiftRequirement("server", 1))},
+        {"requirements": ()},
     ],
 )
 def test_invalid_shift_data(changes):
@@ -281,8 +280,7 @@ def test_invalid_shift_data(changes):
         "id": 1,
         "starts_at": datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc),
         "ends_at": datetime(2026, 11, 23, 13, 0, tzinfo=timezone.utc),
-        "required_staff": 1,
-        "required_skill": "server",
+        "requirements": (ShiftRequirement("server", 1),),
     }
 
     valid_data.update(changes)
@@ -335,8 +333,8 @@ def test_validator_detects_minimum_rest_violation():
     ]
 
     schedule = {
-        1: [1],
-        2: [1],
+        1: {"server": [1]},
+        2: {"server": [1]},
     }
 
     policy = SchedulingPolicy(
@@ -367,8 +365,7 @@ def test_datetime_availability_interval():
             2026, 11, 22, 2, 0,
             tzinfo=timezone.utc,
         ),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     available_start = datetime(
@@ -415,21 +412,19 @@ def test_validator_detects_datetime_overlap():
             id=1,
             starts_at=datetime(2026, 11, 21, 20, 0, tzinfo=timezone.utc),
             ends_at=datetime(2026, 11, 22, 2, 0, tzinfo=timezone.utc),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
         DateTimeShift(
             id=2,
             starts_at=datetime(2026, 11, 22, 1, 0, tzinfo=timezone.utc),
             ends_at=datetime(2026, 11, 22, 5, 0, tzinfo=timezone.utc),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     ]
 
     schedule = {
-        1: [1],
-        2: [1],
+        1: {"server": [1]},
+        2: {"server": [1]},
     }
 
     errors = validate_schedule(employees, shifts, schedule)
@@ -464,8 +459,7 @@ def test_validator_detects_datetime_minimum_rest_violation():
             ends_at=datetime(
                 2026, 11, 21, 23, 0, tzinfo=timezone.utc
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
         DateTimeShift(
             id=2,
@@ -475,14 +469,13 @@ def test_validator_detects_datetime_minimum_rest_violation():
             ends_at=datetime(
                 2026, 11, 22, 11, 0, tzinfo=timezone.utc
             ),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     ]
 
     schedule = {
-        1: [1],
-        2: [1],
+        1: {"server": [1]},
+        2: {"server": [1]},
     }
 
     policy = SchedulingPolicy(
@@ -540,14 +533,13 @@ def test_validator_rejects_weekly_unavailability():
         id=1,
         starts_at=datetime(2026, 11, 24, 9, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 24, 13, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     errors = validate_schedule(
         [employee],
         [shift],
-        {1: [1]},
+        {1: {"server": [1]}},
     )
 
     assert any("unavailable" in error for error in errors)
@@ -571,14 +563,13 @@ def test_validator_rejects_day_off_exception():
         id=1,
         starts_at=datetime(2026, 11, 30, 9, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 30, 13, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     errors = validate_schedule(
         [employee],
         [shift],
-        {1: [1]},
+        {1: {"server": [1]}},
     )
 
     assert any("unavailable" in error for error in errors)
@@ -606,14 +597,13 @@ def test_validator_accepts_exception_working_hours():
         id=1,
         starts_at=datetime(2026, 11, 30, 13, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 30, 17, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     assert validate_schedule(
         [employee],
         [shift],
-        {1: [1]},
+        {1: {"server": [1]}},
     ) == []
 
 def test_validator_rejects_outside_rest_violation():
@@ -636,8 +626,7 @@ def test_validator_rejects_outside_rest_violation():
             id=100,
             starts_at=datetime(2026, 11, 22, 15, tzinfo=timezone.utc),
             ends_at=datetime(2026, 11, 22, 23, tzinfo=timezone.utc),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     )
 
@@ -645,8 +634,7 @@ def test_validator_rejects_outside_rest_violation():
         id=1,
         starts_at=datetime(2026, 11, 23, 7, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 23, 11, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     policy = SchedulingPolicy(
@@ -657,7 +645,7 @@ def test_validator_rejects_outside_rest_violation():
     errors = validate_schedule(
         [employee],
         [monday_shift],
-        {1: [1]},
+        {1: {"server": [1]}},
         policy=policy,
         outside_assignments=(outside,),
     )
@@ -688,8 +676,7 @@ def test_validator_allows_exact_outside_rest():
             id=100,
             starts_at=datetime(2026, 11, 22, 15, tzinfo=timezone.utc),
             ends_at=datetime(2026, 11, 22, 23, tzinfo=timezone.utc),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     )
 
@@ -697,8 +684,7 @@ def test_validator_allows_exact_outside_rest():
         id=1,
         starts_at=datetime(2026, 11, 23, 10, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 23, 14, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     policy = SchedulingPolicy(
@@ -709,7 +695,7 @@ def test_validator_allows_exact_outside_rest():
     errors = validate_schedule(
         [employee],
         [monday_shift],
-        {1: [1]},
+        {1: {"server": [1]}},
         policy=policy,
         outside_assignments=(outside,),
     )
@@ -737,8 +723,7 @@ def test_validator_rejects_outside_overlap_without_rest():
             id=100,
             starts_at=datetime(2026, 11, 23, 10, tzinfo=timezone.utc),
             ends_at=datetime(2026, 11, 23, 14, tzinfo=timezone.utc),
-            required_staff=1,
-            required_skill="server",
+            requirements=(ShiftRequirement("server", 1),),
         ),
     )
 
@@ -746,14 +731,13 @@ def test_validator_rejects_outside_overlap_without_rest():
         id=1,
         starts_at=datetime(2026, 11, 23, 9, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 23, 13, tzinfo=timezone.utc),
-        required_staff=1,
-        required_skill="server",
+        requirements=(ShiftRequirement("server", 1),),
     )
 
     errors = validate_schedule(
         [employee],
         [planning_shift],
-        {1: [1]},
+        {1: {"server": [1]}},
         outside_assignments=(outside,),
     )
 

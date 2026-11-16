@@ -73,45 +73,65 @@ def generate_schedule(
     # Create the constraint programming model.
     model = cp_model.CpModel()
 
-    # Store assignment decision variables.
+    # Store role-specific and employee-shift decision variables.
+    role_assignments = {}
     assignments = {}
 
     for employee in employees:
         for shift in shifts:
-            assignments[(employee.id, shift.id)] = model.new_bool_var(
+            assignment = model.new_bool_var(
                 f"employee_{employee.id}_shift_{shift.id}"
             )
+            assignments[(employee.id, shift.id)] = assignment
 
-    # Prevent employees from working shifts they are not qualified for.
-    for employee in employees:
-        for shift in shifts:
-            if shift.required_skill not in employee.skills:
-                model.add(
-                    assignments[(employee.id, shift.id)] == 0
-                )
-
-    # Prevent assignments outside employee availability.
-    for employee in employees:
-        for shift in shifts:
-            available_during_shift = employee_is_available(
+            available = employee_is_available(
                 employee,
                 shift,
                 scheduling_timezone,
             )
 
-            if not available_during_shift:
-                model.add(
-                    assignments[(employee.id, shift.id)] == 0
-                )
+            eligible_roles = []
 
-    # Add staffing coverage constraints.
+            for requirement in shift.requirements:
+                if (
+                    requirement.skill in employee.skills
+                    and available
+                ):
+                    role_assignment = model.new_bool_var(
+                        f"employee_{employee.id}_shift_{shift.id}"
+                        f"_role_{requirement.skill}"
+                    )
+
+                    role_assignments[
+                        (employee.id, shift.id, requirement.skill)
+                    ] = role_assignment
+
+                    eligible_roles.append(role_assignment)
+
+            # An employee can fill at most one role per shift.
+            model.add(sum(eligible_roles) <= 1)
+
+            # Working the shift means filling exactly one role.
+            model.add(assignment == sum(eligible_roles))
+
+    
+    # Add staffing coverage constraints for each required role.
     for shift in shifts:
-        model.add(
-            sum(
-                assignments[(employee.id, shift.id)]
-                for employee in employees
-            ) == shift.required_staff
-        )
+        for requirement in shift.requirements:
+            model.add(
+                sum(
+                    role_assignments[
+                        (employee.id, shift.id, requirement.skill)
+                    ]
+                    for employee in employees
+                    if (
+                        employee.id,
+                        shift.id,
+                        requirement.skill,
+                    ) in role_assignments
+                ) == requirement.count
+            )
+
 
     # Prevent employees from working overlapping shifts.
     for employee in employees:
@@ -218,6 +238,7 @@ def generate_schedule(
         if policy.fairness_enabled:
             model.minimize(maximum_minutes - minimum_minutes)
 
+    
     else:
         # Repair: minimize changes to the original schedule.
         assignment_changes = []
@@ -226,16 +247,33 @@ def generate_schedule(
             for shift in shifts:
                 assignment = assignments[(employee.id, shift.id)]
 
-                originally_assigned = (
-                    employee.id in original_schedule[shift.id]
+                original_role = next(
+                    (
+                        skill
+                        for skill, employee_ids
+                        in original_schedule[shift.id].items()
+                        if employee.id in employee_ids
+                    ),
+                    None,
                 )
 
-                if originally_assigned:
-                    # Removing an existing assignment counts as one change.
-                    assignment_changes.append(1 - assignment)
-                else:
-                    # Adding a new assignment counts as one change.
+                if original_role is None:
+                    # Adding an employee costs one change.
                     assignment_changes.append(assignment)
+                else:
+                    # Removing the employee or changing their role
+                    # each costs one change.
+                    original_assignment = role_assignments.get(
+                        (employee.id, shift.id, original_role)
+                    )
+
+                    if original_assignment is None:
+                        # The original role is no longer eligible.
+                        assignment_changes.append(1)
+                    else:
+                        assignment_changes.append(
+                            1 - original_assignment
+                        )
 
         # Minimize disruption, with optional fairness as a tie-breaker.
         total_changes = sum(assignment_changes)
@@ -260,14 +298,27 @@ def generate_schedule(
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         schedule = {}
 
+        
         for shift in shifts:
-            schedule[shift.id] = [
-                employee.id
-                for employee in employees
-                if solver.value(
-                    assignments[(employee.id, shift.id)]
-                ) == 1
-            ]
+            schedule[shift.id] = {}
+
+            for requirement in shift.requirements:
+                skill = requirement.skill
+
+                schedule[shift.id][skill] = [
+                    employee.id
+                    for employee in employees
+                    if (
+                        employee.id,
+                        shift.id,
+                        skill,
+                    ) in role_assignments
+                    and solver.value(
+                        role_assignments[
+                            (employee.id, shift.id, skill)
+                        ]
+                    ) == 1
+                ]
 
         return ScheduleResult(
             status=status_name,

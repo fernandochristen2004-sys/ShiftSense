@@ -7,10 +7,11 @@ from optimizer.timeutils import (
 )
 from datetime import timezone, tzinfo
 
+
 def validate_schedule(
     employees: list[Employee],
     shifts: list[DateTimeShift],
-    schedule: dict[int, list[int]],
+    schedule: dict[int, dict[str, list[int]]],
     policy: SchedulingPolicy | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
     outside_assignments: tuple[FixedAssignment, ...] = (),
@@ -39,51 +40,87 @@ def validate_schedule(
     if set(schedule) != expected_shift_ids:
         errors.append("Schedule contains missing or unexpected shifts.")
 
+    # Track employees working each shift, regardless of role.
+    assigned_by_shift = {}
+
     # Check staffing coverage and employee references.
     for shift in shifts:
-        assigned_ids = schedule.get(shift.id, [])
+        role_assignments = schedule.get(shift.id, {})
 
-        if len(assigned_ids) != shift.required_staff:
+        expected_roles = {
+            requirement.skill
+            for requirement in shift.requirements
+        }
+
+        if not isinstance(role_assignments, dict):
             errors.append(
-                f"Shift {shift.id}: expected "
-                f"{shift.required_staff} employees, "
-                f"found {len(assigned_ids)}."
+                f"Shift {shift.id}: role assignments must be a dictionary."
+            )
+            assigned_by_shift[shift.id] = set()
+            continue
+
+        if set(role_assignments) != expected_roles:
+            errors.append(
+                f"Shift {shift.id}: missing or unexpected roles."
             )
 
-        if len(assigned_ids) != len(set(assigned_ids)):
+        all_assigned_ids = []
+
+        for requirement in shift.requirements:
+            skill = requirement.skill
+            assigned_ids = role_assignments.get(skill, [])
+
+            if not isinstance(assigned_ids, list):
+                errors.append(
+                    f"Shift {shift.id}, role {skill}: "
+                    "assignments must be a list."
+                )
+                continue
+
+            if len(assigned_ids) != requirement.count:
+                errors.append(
+                    f"Shift {shift.id}, role {skill}: expected "
+                    f"{requirement.count} employees, "
+                    f"found {len(assigned_ids)}."
+                )
+
+            all_assigned_ids.extend(assigned_ids)
+
+            # Check employee references and qualifications.
+            for employee_id in assigned_ids:
+                if employee_id not in employee_by_id:
+                    errors.append(
+                        f"Shift {shift.id}: unknown employee {employee_id}."
+                    )
+                    continue
+
+                employee = employee_by_id[employee_id]
+
+                if skill not in employee.skills:
+                    errors.append(
+                        f"Shift {shift.id}: employee {employee_id} "
+                        f"does not have the required skill '{skill}'."
+                    )
+
+                # Check employee availability.
+                available = employee_is_available(
+                    employee,
+                    shift,
+                    scheduling_timezone,
+                )
+
+                if not available:
+                    errors.append(
+                        f"Shift {shift.id}: employee {employee_id} "
+                        "is unavailable during the assigned shift."
+                    )
+
+        if len(all_assigned_ids) != len(set(all_assigned_ids)):
             errors.append(
                 f"Shift {shift.id}: duplicate employee assignments."
             )
 
-        # Check employee references and qualifications.
-        for employee_id in assigned_ids:
-            if employee_id not in employee_by_id:
-                errors.append(
-                    f"Shift {shift.id}: unknown employee {employee_id}."
-                )
-                continue
-
-            employee = employee_by_id[employee_id]
-
-            if shift.required_skill not in employee.skills:
-                errors.append(
-                    f"Shift {shift.id}: employee {employee_id} "
-                    f"does not have the required skill "
-                    f"'{shift.required_skill}'."
-                )
-
-            # Check employee availability.
-            available = employee_is_available(
-                employee,
-                shift,
-                scheduling_timezone,
-            )
-
-            if not available:
-                errors.append(
-                    f"Shift {shift.id}: employee {employee_id} "
-                    "is unavailable during the assigned shift."
-                )
+        assigned_by_shift[shift.id] = set(all_assigned_ids)
 
     # Check whether employees have overlapping assignments.
     for employee in employees:
@@ -92,11 +129,15 @@ def validate_schedule(
 
                 # Check whether the employee works both shifts.
                 works_first = (
-                    employee.id in schedule.get(first_shift.id, [])
+                    employee.id in assigned_by_shift.get(
+                        first_shift.id, set()
+                    )
                 )
 
                 works_second = (
-                    employee.id in schedule.get(second_shift.id, [])
+                    employee.id in assigned_by_shift.get(
+                        second_shift.id, set()
+                    )
                 )
 
                 if not (works_first and works_second):
@@ -119,7 +160,7 @@ def validate_schedule(
         total_minutes = 0
 
         for shift in shifts:
-            if employee.id in schedule.get(shift.id, []):
+            if employee.id in assigned_by_shift.get(shift.id, set()):
                 shift_duration = shift_duration_minutes(shift)
                 total_minutes += shift_duration
 
@@ -137,11 +178,15 @@ def validate_schedule(
                 for second_shift in shifts[first_index + 1:]:
 
                     works_first = (
-                        employee.id in schedule.get(first_shift.id, [])
+                        employee.id in assigned_by_shift.get(
+                            first_shift.id, set()
+                        )
                     )
 
                     works_second = (
-                        employee.id in schedule.get(second_shift.id, [])
+                        employee.id in assigned_by_shift.get(
+                            second_shift.id, set()
+                        )
                     )
 
                     if not (works_first and works_second):
@@ -166,7 +211,9 @@ def validate_schedule(
     # Check assignments against fixed outside commitments.
     for outside in outside_assignments:
         for shift in shifts:
-            if outside.employee_id not in schedule.get(shift.id, []):
+            if outside.employee_id not in assigned_by_shift.get(
+                shift.id, set()
+            ):
                 continue
 
             if datetime_shifts_overlap(outside.shift, shift):
