@@ -1,15 +1,21 @@
 import pytest
 
-from optimizer.models import DateTimeShift
+from optimizer.models import DateTimeShift, WeeklyAvailability, AvailabilityException, Employee
 from optimizer.timeutils import (
     minutes_from_start,
     datetime_shifts_overlap,
     datetime_shifts_violate_minimum_rest,
     shift_duration_minutes,
     shift_fits_interval,
+    weekly_rule_interval,
+    exception_intervals,
+    find_availability_exception,
+    availability_intervals_for_date,
+    merge_availability_intervals,
+    employee_is_available,
 )
-from datetime import datetime, timedelta, timezone
-
+from datetime import datetime, timedelta, timezone, time, date
+from zoneinfo import ZoneInfo
 
 @pytest.mark.parametrize(
     "first_day, first_end, second_day, second_start, "
@@ -267,3 +273,629 @@ def test_datetime_shift_fits_availability_interval():
         interval_start,
         interval_end,
     )
+
+def test_weekly_rule_interval_matching_day():
+    rule = WeeklyAvailability(
+        weekday=0,
+        start_time=time(9, 0),
+        end_time=time(17, 0),
+    )
+
+    result = weekly_rule_interval(
+        rule,
+        date(2026, 11, 30),
+        timezone.utc,
+    )
+
+    assert result == (
+        datetime(2026, 11, 30, 9, 0, tzinfo=timezone.utc),
+        datetime(2026, 11, 30, 17, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_weekly_rule_interval_non_matching_day():
+    rule = WeeklyAvailability(
+        weekday=0,
+        start_time=time(9, 0),
+        end_time=time(17, 0),
+    )
+
+    result = weekly_rule_interval(
+        rule,
+        date(2026, 12, 1),
+        timezone.utc,
+    )
+
+    assert result is None
+
+def test_exception_intervals_available():
+    exception = AvailabilityException(
+        date=date(2026, 11, 30),
+        available=True,
+        intervals=((time(13, 0), time(17, 0)),),
+    )
+
+    result = exception_intervals(
+        exception,
+        timezone.utc,
+    )
+
+    assert result == (
+        (
+            datetime(2026, 11, 30, 13, 0, tzinfo=timezone.utc),
+            datetime(2026, 11, 30, 17, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+
+def test_exception_intervals_unavailable():
+    exception = AvailabilityException(
+        date=date(2026, 11, 30),
+        available=False,
+    )
+
+    result = exception_intervals(
+        exception,
+        timezone.utc,
+    )
+
+    assert result == ()
+
+def test_find_availability_exception():
+    day_off = AvailabilityException(
+        date=date(2026, 11, 30),
+        available=False,
+    )
+
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        availability_exceptions=(day_off,),
+    )
+
+    assert find_availability_exception(
+        employee,
+        date(2026, 11, 30),
+    ) == day_off
+
+    assert find_availability_exception(
+        employee,
+        date(2026, 12, 1),
+    ) is None
+
+def test_availability_intervals_for_date():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(
+                weekday=0,
+                start_time=time(9, 0),
+                end_time=time(17, 0),
+            ),
+        ),
+        availability_exceptions=(
+            AvailabilityException(
+                date=date(2026, 11, 30),
+                available=True,
+                intervals=((time(13, 0), time(17, 0)),),
+            ),
+        ),
+    )
+
+    # Normal Monday follows the recurring rule.
+    assert availability_intervals_for_date(
+        employee,
+        date(2026, 11, 23),
+        timezone.utc,
+    ) == (
+        (
+            datetime(2026, 11, 23, 9, 0, tzinfo=timezone.utc),
+            datetime(2026, 11, 23, 17, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    # The exception overrides the recurring Monday rule.
+    assert availability_intervals_for_date(
+        employee,
+        date(2026, 11, 30),
+        timezone.utc,
+    ) == (
+        (
+            datetime(2026, 11, 30, 13, 0, tzinfo=timezone.utc),
+            datetime(2026, 11, 30, 17, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    # Tuesday has no recurring rule or exception.
+    assert availability_intervals_for_date(
+        employee,
+        date(2026, 12, 1),
+        timezone.utc,
+    ) == ()
+
+def test_day_off_exception_overrides_weekly_availability():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(
+                weekday=0,
+                start_time=time(9, 0),
+                end_time=time(17, 0),
+            ),
+        ),
+        availability_exceptions=(
+            AvailabilityException(
+                date=date(2026, 11, 30),
+                available=False,
+            ),
+        ),
+    )
+
+    # The normal Monday is available.
+    assert availability_intervals_for_date(
+        employee,
+        date(2026, 11, 23),
+        timezone.utc,
+    ) != ()
+
+    # The day-off exception overrides Monday availability.
+    assert availability_intervals_for_date(
+        employee,
+        date(2026, 11, 30),
+        timezone.utc,
+    ) == ()
+
+def test_merge_availability_intervals():
+    base = datetime(
+        2026, 11, 23, 0, 0,
+        tzinfo=timezone.utc,
+    )
+
+    def interval(start_hour, end_hour):
+        return (
+            base + timedelta(hours=start_hour),
+            base + timedelta(hours=end_hour),
+        )
+
+    # Adjacent intervals should merge.
+    assert merge_availability_intervals((
+        interval(9, 13),
+        interval(13, 17),
+    )) == (
+        interval(9, 17),
+    )
+
+    # Overlapping intervals should merge.
+    assert merge_availability_intervals((
+        interval(9, 14),
+        interval(12, 17),
+    )) == (
+        interval(9, 17),
+    )
+
+    # Intervals with a gap should remain separate.
+    assert merge_availability_intervals((
+        interval(9, 12),
+        interval(14, 17),
+    )) == (
+        interval(9, 12),
+        interval(14, 17),
+    )
+
+    # Empty input should produce empty output.
+    assert merge_availability_intervals(()) == ()
+
+def test_employee_available_with_weekly_rule():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9, 0), time(17, 0)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert employee_is_available(employee, shift, timezone.utc)
+
+
+def test_employee_unavailable_on_exception_date():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9, 0), time(17, 0)),
+        ),
+        availability_exceptions=(
+            AvailabilityException(date(2026, 11, 30), False),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert not employee_is_available(employee, shift, timezone.utc)
+
+
+def test_employee_available_across_midnight():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(20, 0), time(23, 0)),
+            WeeklyAvailability(1, time(0, 0), time(3, 0)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 21, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    # There is a one-hour availability gap from 23:00 to 00:00.
+    assert not employee_is_available(employee, shift, timezone.utc)
+
+
+def test_employee_available_with_adjacent_intervals():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9, 0), time(13, 0)),
+            WeeklyAvailability(0, time(13, 0), time(17, 0)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert employee_is_available(employee, shift, timezone.utc)
+
+
+def test_employee_legacy_datetime_availability():
+    start = datetime(2026, 11, 30, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 30, 17, tzinfo=timezone.utc)
+
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=((start, end),),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 10, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 30, 16, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert employee_is_available(employee, shift, timezone.utc)
+
+def test_overnight_shift_with_midnight_gap_is_unavailable():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(20), time(23)),
+            WeeklyAvailability(1, time(0), time(3)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 21, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert not employee_is_available(
+        employee,
+        shift,
+        timezone.utc,
+    )
+
+def test_weekly_rule_interval_overnight():
+    rule = WeeklyAvailability(
+        weekday=0,
+        start_time=time(22, 0),
+        end_time=time(2, 0),
+    )
+
+    result = weekly_rule_interval(
+        rule,
+        date(2026, 11, 30),
+        timezone.utc,
+    )
+
+    assert result == (
+        datetime(2026, 11, 30, 22, tzinfo=timezone.utc),
+        datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
+    )
+
+
+def test_weekly_rule_rejects_equal_times():
+    with pytest.raises(ValueError):
+        WeeklyAvailability(
+            weekday=0,
+            start_time=time(9, 0),
+            end_time=time(9, 0),
+        )
+
+
+def test_overnight_weekly_availability_covers_next_day():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(22), time(2)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 23, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 1, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert employee_is_available(employee, shift, timezone.utc)
+
+
+def test_tuesday_day_off_blocks_monday_overnight_shift():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(22), time(2)),
+        ),
+        availability_exceptions=(
+            AvailabilityException(date(2026, 12, 1), False),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 23, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 1, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert not employee_is_available(employee, shift, timezone.utc)
+
+
+def test_tuesday_exception_can_shorten_overnight_availability():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(22), time(3)),
+        ),
+        availability_exceptions=(
+            AvailabilityException(
+                date(2026, 12, 1),
+                True,
+                ((time(0), time(1)),),
+            ),
+        ),
+    )
+
+    allowed_shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 22, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 1, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    rejected_shift = DateTimeShift(
+        id=2,
+        starts_at=datetime(2026, 11, 30, 22, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert employee_is_available(
+        employee,
+        allowed_shift,
+        timezone.utc,
+    )
+
+    assert not employee_is_available(
+        employee,
+        rejected_shift,
+        timezone.utc,
+    )
+
+
+def test_dst_transition_requires_explicit_handling():
+    new_york = ZoneInfo("America/New_York")
+
+    rule = WeeklyAvailability(
+        weekday=6,
+        start_time=time(1, 0),
+        end_time=time(4, 0),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="DST transitions",
+    ):
+        weekly_rule_interval(
+            rule,
+            date(2026, 3, 8),
+            new_york,
+        )
+
+
+def test_rejects_weekly_interval_crossing_dst():
+    new_york = ZoneInfo("America/New_York")
+
+    rule = WeeklyAvailability(
+        weekday=6,
+        start_time=time(1),
+        end_time=time(4),
+    )
+
+    with pytest.raises(ValueError, match="DST transitions"):
+        weekly_rule_interval(
+            rule,
+            date(2026, 3, 8),
+            new_york,
+        )
+
+
+def test_rejects_nonexistent_local_time():
+    new_york = ZoneInfo("America/New_York")
+
+    rule = WeeklyAvailability(
+        weekday=6,
+        start_time=time(2, 30),
+        end_time=time(3, 30),
+    )
+
+    with pytest.raises(ValueError):
+        weekly_rule_interval(
+            rule,
+            date(2026, 3, 8),
+            new_york,
+        )
+
+
+def test_rejects_ambiguous_local_time():
+    new_york = ZoneInfo("America/New_York")
+
+    rule = WeeklyAvailability(
+        weekday=6,
+        start_time=time(1, 30),
+        end_time=time(2, 30),
+    )
+
+    with pytest.raises(ValueError):
+        weekly_rule_interval(
+            rule,
+            date(2026, 11, 1),
+            new_york,
+        )
+
+
+def test_rejects_exception_interval_crossing_dst():
+    new_york = ZoneInfo("America/New_York")
+
+    exception = AvailabilityException(
+        date=date(2026, 3, 8),
+        available=True,
+        intervals=((time(1), time(4)),),
+    )
+
+    with pytest.raises(ValueError, match="DST transitions"):
+        exception_intervals(
+            exception,
+            new_york,
+        )
+
+
+def test_exception_only_employee_unavailable_on_other_dates():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        availability_exceptions=(
+            AvailabilityException(
+                date(2026, 11, 30),
+                True,
+                ((time(9), time(17)),),
+            ),
+        ),
+    )
+
+    allowed_shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 9, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 30, 13, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    other_shift = DateTimeShift(
+        id=2,
+        starts_at=datetime(2026, 12, 1, 9, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 13, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert employee_is_available(employee, allowed_shift, timezone.utc)
+    assert not employee_is_available(employee, other_shift, timezone.utc)
+
+
+def test_overnight_availability_ending_at_midnight():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(20), time(0)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 20, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 12, 1, 0, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert employee_is_available(employee, shift, timezone.utc)

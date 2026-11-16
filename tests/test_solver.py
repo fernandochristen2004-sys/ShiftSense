@@ -1,9 +1,9 @@
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule, get_shift_duration_minutes
 from optimizer.solver import shifts_overlap, shifts_violate_rest
 from optimizer.validator import validate_schedule
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date, time
 
 def make_shift(
     shift_id: int,
@@ -614,3 +614,161 @@ def test_datetime_schedule_passes_independent_validator():
     )
 
     assert errors == []
+
+def test_solver_respects_weekly_availability():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9, 0), time(17, 0)),
+        ),
+    )
+
+    monday_shift = make_shift(1, 0, 9, 13, 1, "server")
+    tuesday_shift = make_shift(2, 1, 9, 13, 1, "server")
+
+    monday_result = generate_schedule(
+        [employee], [monday_shift]
+    )
+
+    tuesday_result = generate_schedule(
+        [employee], [tuesday_shift]
+    )
+
+    assert monday_result.status == "OPTIMAL"
+    assert monday_result.assignments == {1: [1]}
+
+    assert tuesday_result.status == "INFEASIBLE"
+    assert tuesday_result.assignments is None
+
+
+def test_solver_respects_day_off_exception():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9, 0), time(17, 0)),
+        ),
+        availability_exceptions=(
+            AvailabilityException(
+                date(2026, 11, 30),
+                False,
+            ),
+        ),
+    )
+
+    shift = make_shift(1, 7, 9, 13, 1, "server")
+
+    result = generate_schedule([employee], [shift])
+
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+
+def test_solver_respects_exception_working_hours():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9, 0), time(17, 0)),
+        ),
+        availability_exceptions=(
+            AvailabilityException(
+                date(2026, 11, 30),
+                True,
+                ((time(13, 0), time(17, 0)),),
+            ),
+        ),
+    )
+
+    morning_shift = make_shift(1, 7, 9, 13, 1, "server")
+    afternoon_shift = make_shift(2, 7, 13, 17, 1, "server")
+
+    morning_result = generate_schedule(
+        [employee], [morning_shift]
+    )
+
+    afternoon_result = generate_schedule(
+        [employee], [afternoon_shift]
+    )
+
+    assert morning_result.status == "INFEASIBLE"
+    assert morning_result.assignments is None
+
+    assert afternoon_result.status == "OPTIMAL"
+    assert afternoon_result.assignments == {2: [1]}
+
+def test_solver_respects_scheduling_timezone():
+    malaysia_timezone = timezone(timedelta(hours=8))
+
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9), time(17)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(
+            2026, 11, 30, 1, tzinfo=timezone.utc
+        ),
+        ends_at=datetime(
+            2026, 11, 30, 5, tzinfo=timezone.utc
+        ),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    result = generate_schedule(
+        [employee],
+        [shift],
+        scheduling_timezone=malaysia_timezone,
+    )
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {1: [1]}
+
+
+def test_solver_rejects_shift_outside_local_availability():
+    malaysia_timezone = timezone(timedelta(hours=8))
+
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9), time(17)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(
+            2026, 11, 30, 9, tzinfo=timezone.utc
+        ),
+        ends_at=datetime(
+            2026, 11, 30, 13, tzinfo=timezone.utc
+        ),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    result = generate_schedule(
+        [employee],
+        [shift],
+        scheduling_timezone=malaysia_timezone,
+    )
+
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None

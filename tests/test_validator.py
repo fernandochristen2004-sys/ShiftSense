@@ -1,8 +1,8 @@
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException
 from optimizer.validator import validate_schedule
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date, time
 from optimizer.timeutils import shift_fits_interval
 from optimizer.input_validator import validate_scheduling_inputs
 import pytest
@@ -524,3 +524,94 @@ def test_rejects_unsupported_shift_models():
         match="All shifts must use the DateTimeShift model",
     ):
         validate_scheduling_inputs(employees, shifts)
+
+def test_validator_rejects_weekly_unavailability():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9), time(17)),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 24, 9, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 24, 13, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    errors = validate_schedule(
+        [employee],
+        [shift],
+        {1: [1]},
+    )
+
+    assert any("unavailable" in error for error in errors)
+
+
+def test_validator_rejects_day_off_exception():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9), time(17)),
+        ),
+        availability_exceptions=(
+            AvailabilityException(date(2026, 11, 30), False),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 9, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 30, 13, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    errors = validate_schedule(
+        [employee],
+        [shift],
+        {1: [1]},
+    )
+
+    assert any("unavailable" in error for error in errors)
+
+
+def test_validator_accepts_exception_working_hours():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(
+            WeeklyAvailability(0, time(9), time(17)),
+        ),
+        availability_exceptions=(
+            AvailabilityException(
+                date(2026, 11, 30),
+                True,
+                ((time(13), time(17)),),
+            ),
+        ),
+    )
+
+    shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 30, 13, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 30, 17, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    assert validate_schedule(
+        [employee],
+        [shift],
+        {1: [1]},
+    ) == []

@@ -2,15 +2,17 @@ from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
 from optimizer.timeutils import (
     datetime_shifts_overlap,
     datetime_shifts_violate_minimum_rest,
-    shift_fits_interval,
+    employee_is_available,
     shift_duration_minutes,
 )
+from datetime import timezone, tzinfo
 
 def validate_schedule(
     employees: list[Employee],
     shifts: list[DateTimeShift],
     schedule: dict[int, list[int]],
     policy: SchedulingPolicy | None = None,
+    scheduling_timezone: tzinfo = timezone.utc,
 ) -> list[str]:
     """
     Validate a generated schedule.
@@ -70,13 +72,10 @@ def validate_schedule(
                 )
 
             # Check employee availability.
-            # Check concrete datetime availability intervals.
-            available = (
-                employee.datetime_availability is not None
-                and any(
-                    shift_fits_interval(shift, start, end)
-                    for start, end in employee.datetime_availability
-                )
+            available = employee_is_available(
+                employee,
+                shift,
+                scheduling_timezone,
             )
 
             if not available:

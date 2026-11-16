@@ -1,5 +1,5 @@
-from optimizer.models import DateTimeShift
-from datetime import datetime, timezone
+from optimizer.models import DateTimeShift, WeeklyAvailability, AvailabilityException, Employee
+from datetime import datetime, timezone, date, tzinfo, timedelta, time
 
 def minutes_from_start(
     timestamp: datetime,
@@ -96,4 +96,251 @@ def shift_fits_interval(
     return (
         interval_start <= shift.starts_at
         and shift.ends_at <= interval_end
+    )
+
+
+def validate_local_interval(
+    start: datetime,
+    end: datetime,
+) -> None:
+    """Reject invalid or ambiguous local scheduling intervals."""
+
+    if start.utcoffset() != end.utcoffset():
+        raise ValueError(
+            "Availability intervals crossing DST transitions "
+            "are not supported."
+        )
+
+    for boundary in (start, end):
+        # Convert to UTC and back to detect nonexistent local times.
+        round_trip = boundary.astimezone(
+            timezone.utc
+        ).astimezone(boundary.tzinfo)
+
+        if round_trip.replace(fold=boundary.fold) != boundary:
+            raise ValueError(
+                "Nonexistent local availability time."
+            )
+
+        # Reject ambiguous times that occur twice.
+        alternate = boundary.replace(fold=1 - boundary.fold)
+
+        if alternate.utcoffset() != boundary.utcoffset():
+            raise ValueError(
+                "Ambiguous local availability time."
+            )
+
+
+def weekly_rule_interval(
+    rule: WeeklyAvailability,
+    target_date: date,
+    scheduling_timezone: tzinfo,
+) -> tuple[datetime, datetime] | None:
+    """Convert a matching weekly rule into a datetime interval."""
+
+    if target_date.weekday() != rule.weekday:
+        return None
+
+    start = datetime.combine(
+        target_date,
+        rule.start_time,
+        tzinfo=scheduling_timezone,
+    )
+
+    end_date = target_date
+
+    # Overnight availability ends on the following calendar day.
+    if rule.end_time < rule.start_time:
+        end_date += timedelta(days=1)
+
+    end = datetime.combine(
+        end_date,
+        rule.end_time,
+        tzinfo=scheduling_timezone,
+    )
+    validate_local_interval(start, end)
+    return start, end
+
+
+def exception_intervals(
+    exception: AvailabilityException,
+    scheduling_timezone: tzinfo,
+) -> tuple[tuple[datetime, datetime], ...]:
+    """Convert a date-specific exception into datetime intervals."""
+
+    if not exception.available:
+        return ()
+
+    intervals = []
+
+    for start_time, end_time in exception.intervals:
+        start = datetime.combine(
+            exception.date,
+            start_time,
+            tzinfo=scheduling_timezone,
+        )
+
+        end = datetime.combine(
+            exception.date,
+            end_time,
+            tzinfo=scheduling_timezone,
+        )
+
+        validate_local_interval(start, end)
+        intervals.append((start, end))
+
+    return tuple(intervals)
+
+
+def find_availability_exception(
+    employee: Employee,
+    target_date: date,
+) -> AvailabilityException | None:
+    """Find an employee's availability exception for a date."""
+
+    for exception in employee.availability_exceptions:
+        if exception.date == target_date:
+            return exception
+
+    return None
+
+
+def availability_intervals_for_date(
+    employee: Employee,
+    target_date: date,
+    scheduling_timezone: tzinfo,
+) -> tuple[tuple[datetime, datetime], ...]:
+    """Get availability within one calendar date."""
+
+    day_start = datetime.combine(
+        target_date,
+        time.min,
+        tzinfo=scheduling_timezone,
+    )
+
+    next_day_start = datetime.combine(
+        target_date + timedelta(days=1),
+        time.min,
+        tzinfo=scheduling_timezone,
+    )
+
+    # Date-specific exceptions override weekly rules.
+    exception = find_availability_exception(
+        employee,
+        target_date,
+    )
+
+    if exception is not None:
+        intervals = exception_intervals(
+            exception,
+            scheduling_timezone,
+        )
+    else:
+        intervals = []
+
+        # Include rules starting today and overnight rules
+        # carried over from yesterday.
+        for rule_date in (
+            target_date - timedelta(days=1),
+            target_date,
+        ):
+            for rule in employee.weekly_availability:
+                interval = weekly_rule_interval(
+                    rule,
+                    rule_date,
+                    scheduling_timezone,
+                )
+
+                if interval is not None:
+                    intervals.append(interval)
+
+    # Restrict availability to the requested calendar date.
+    clipped = []
+
+    for start, end in intervals:
+        clipped_start = max(start, day_start)
+        clipped_end = min(end, next_day_start)
+
+        if clipped_start < clipped_end:
+            clipped.append((clipped_start, clipped_end))
+
+    return tuple(clipped)
+
+
+def merge_availability_intervals(
+    intervals: tuple[tuple[datetime, datetime], ...],
+) -> tuple[tuple[datetime, datetime], ...]:
+    """Merge overlapping or adjacent availability intervals."""
+
+    if not intervals:
+        return ()
+
+    sorted_intervals = sorted(
+        intervals,
+        key=lambda interval: interval[0],
+    )
+
+    merged = [sorted_intervals[0]]
+
+    for start, end in sorted_intervals[1:]:
+        previous_start, previous_end = merged[-1]
+
+        if start <= previous_end:
+            merged[-1] = (
+                previous_start,
+                max(previous_end, end),
+            )
+        else:
+            merged.append((start, end))
+
+    return tuple(merged)
+
+def employee_is_available(
+    employee: Employee,
+    shift: DateTimeShift,
+    scheduling_timezone: tzinfo,
+) -> bool:
+    """Check whether employee availability covers an entire shift."""
+
+    # Preserve the existing datetime-only availability behavior.
+    if (
+        not employee.weekly_availability
+        and not employee.availability_exceptions
+    ):
+        if employee.datetime_availability is None:
+            return False
+
+        intervals = employee.datetime_availability
+        return any(
+            shift_fits_interval(shift, start, end)
+            for start, end in merge_availability_intervals(intervals)
+        )
+
+    # Convert the shift into the scheduling timezone.
+    local_start = shift.starts_at.astimezone(scheduling_timezone)
+    local_end = shift.ends_at.astimezone(scheduling_timezone)
+
+    # Include every calendar date touched by the shift.
+    current_date = local_start.date()
+    last_date = local_end.date()
+
+    intervals = []
+
+    while current_date <= last_date:
+        intervals.extend(
+            availability_intervals_for_date(
+                employee,
+                current_date,
+                scheduling_timezone,
+            )
+        )
+
+        current_date += timedelta(days=1)
+
+    # Combine adjacent and overlapping intervals.
+    merged = merge_availability_intervals(tuple(intervals))
+
+    return any(
+        shift_fits_interval(shift, start, end)
+        for start, end in merged
     )

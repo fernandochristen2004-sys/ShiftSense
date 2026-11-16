@@ -1,7 +1,7 @@
 import pytest
 
-from datetime import datetime, timezone
-from optimizer.models import Employee, DateTimeShift, SchedulingPolicy
+from datetime import datetime, timezone, time, date
+from optimizer.models import Employee, DateTimeShift, SchedulingPolicy, WeeklyAvailability, AvailabilityException
 from optimizer.input_validator import validate_scheduling_inputs
 
 
@@ -159,3 +159,141 @@ def test_employee_supports_datetime_availability():
     )
 
     assert employee.datetime_availability == ((start, end),)
+
+def test_employee_supports_weekly_availability():
+    monday = WeeklyAvailability(
+        weekday=0,
+        start_time=time(9, 0),
+        end_time=time(17, 0),
+    )
+
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        weekly_availability=(monday,),
+    )
+
+    assert employee.weekly_availability == (monday,)
+
+def test_employee_supports_availability_exceptions():
+    day_off = AvailabilityException(
+        date=date(2026, 11, 30),
+        available=False,
+    )
+
+    shorter_day = AvailabilityException(
+        date=date(2026, 12, 1),
+        available=True,
+        intervals=((time(13, 0), time(17, 0)),),
+    )
+
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        availability_exceptions=(day_off, shorter_day),
+    )
+
+    assert employee.availability_exceptions == (
+        day_off,
+        shorter_day,
+    )
+
+
+def test_duplicate_availability_exception_dates():
+    exceptions = (
+        AvailabilityException(date(2026, 11, 30), False),
+        AvailabilityException(
+            date(2026, 11, 30),
+            True,
+            ((time(9, 0), time(17, 0)),),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Duplicate availability exception dates",
+    ):
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=20,
+            availability_exceptions=exceptions,
+        )
+
+
+@pytest.mark.parametrize(
+    "available, intervals",
+    [
+        (True, ()),
+        (False, ((time(9, 0), time(17, 0)),)),
+        (True, ((time(17, 0), time(9, 0)),)),
+        (True, ((time(9, 0, 30), time(17, 0)),)),
+        (True, (("09:00", time(17, 0)),)),
+    ],
+)
+def test_invalid_availability_exception_intervals(
+    available,
+    intervals,
+):
+    with pytest.raises(ValueError):
+        AvailabilityException(
+            date=date(2026, 11, 30),
+            available=available,
+            intervals=intervals,
+        )
+
+def test_employee_rejects_mixed_availability_models():
+    with pytest.raises(
+        ValueError,
+        match="Cannot combine datetime availability",
+    ):
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=20,
+            datetime_availability=(
+                (
+                    datetime(
+                        2026, 11, 30, 9,
+                        tzinfo=timezone.utc,
+                    ),
+                    datetime(
+                        2026, 11, 30, 17,
+                        tzinfo=timezone.utc,
+                    ),
+                ),
+            ),
+            weekly_availability=(
+                WeeklyAvailability(
+                    0,
+                    time(9),
+                    time(17),
+                ),
+            ),
+        )
+
+
+def test_employee_rejects_datetime_with_exceptions():
+    with pytest.raises(
+        ValueError,
+        match="Cannot combine datetime availability",
+    ):
+        Employee(
+            id=1,
+            name="Alice",
+            skills=frozenset({"server"}),
+            max_hours=20,
+            datetime_availability=(),
+            availability_exceptions=(
+                AvailabilityException(
+                    date(2026, 11, 30),
+                    False,
+                ),
+            ),
+        )

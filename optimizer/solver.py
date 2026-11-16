@@ -6,8 +6,9 @@ from optimizer.timeutils import (
     datetime_shifts_overlap,
     datetime_shifts_violate_minimum_rest,
     shift_duration_minutes,
-    shift_fits_interval,
+    employee_is_available,
 )
+from datetime import timezone, tzinfo
 
 def get_shift_duration_minutes(
     shift: DateTimeShift,
@@ -39,6 +40,7 @@ def generate_schedule(
     shifts: list[DateTimeShift],
     original_schedule: dict[int, list[int]] | None = None,
     policy: SchedulingPolicy | None = None,
+    scheduling_timezone: tzinfo = timezone.utc,
 ):
         
     # Validate the complete scheduling dataset.
@@ -86,14 +88,10 @@ def generate_schedule(
     # Prevent assignments outside employee availability.
     for employee in employees:
         for shift in shifts:
-
-            # Datetime shifts require concrete availability intervals.
-            available_during_shift = (
-                employee.datetime_availability is not None
-                and any(
-                    shift_fits_interval(shift, start, end)
-                    for start, end in employee.datetime_availability
-                )
+            available_during_shift = employee_is_available(
+                employee,
+                shift,
+                scheduling_timezone,
             )
 
             if not available_during_shift:
