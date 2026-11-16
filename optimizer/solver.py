@@ -9,6 +9,7 @@ from optimizer.timeutils import (
     employee_is_available,
 )
 from datetime import timezone, tzinfo
+from optimizer.lock_conflicts import find_lock_conflicts
 
 def get_shift_duration_minutes(
     shift: DateTimeShift,
@@ -38,17 +39,22 @@ def shifts_violate_rest(
 def generate_schedule(
     employees: list[Employee],
     shifts: list[DateTimeShift],
-    original_schedule: dict[int, list[int]] | None = None,
+    original_schedule: dict[int, dict[str, list[int]]] | None = None,
     policy: SchedulingPolicy | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
     outside_assignments: tuple[FixedAssignment, ...] = (),
+    locked_assignments: dict[int, dict[str, list[int]]] | None = None,
+    excluded_assignments: dict[int, list[int]] | None = None,
 ):
-        
+
+
     # Validate the complete scheduling dataset.
     validate_scheduling_inputs(
         employees,
         shifts,
         outside_assignments,
+        locked_assignments,
+        excluded_assignments,
     )
 
     # Validate the original schedule before attempting repair.
@@ -131,6 +137,33 @@ def generate_schedule(
                     ) in role_assignments
                 ) == requirement.count
             )
+
+
+    # Enforce locked employee assignments within the planning window.
+    if locked_assignments is not None:
+        for shift_id, role_locks in locked_assignments.items():
+            for skill, employee_ids in role_locks.items():
+                for employee_id in employee_ids:
+                    role_assignment = role_assignments.get(
+                        (employee_id, shift_id, skill)
+                    )
+
+                    if role_assignment is None:
+                        # The employee is unavailable or unqualified.
+                        # A valid lock must not be silently ignored.
+                        model.add(0 == 1)
+                    else:
+                        # Keep the employee in this exact shift and role.
+                        model.add(role_assignment == 1)
+
+
+    # Prevent excluded employees from working specified shifts.
+    if excluded_assignments is not None:
+        for shift_id, employee_ids in excluded_assignments.items():
+            for employee_id in employee_ids:
+                model.add(
+                    assignments[(employee_id, shift_id)] == 0
+                )
 
 
     # Prevent employees from working overlapping shifts.
@@ -325,8 +358,21 @@ def generate_schedule(
             assignments=schedule,
         )
 
+    # Explain direct lock conflicts when no valid schedule exists.
+    conflicts = ()
+
+    if status == cp_model.INFEASIBLE:
+        conflicts = find_lock_conflicts(
+            employees=employees,
+            shifts=shifts,
+            locked_assignments=locked_assignments,
+            policy=policy,
+            scheduling_timezone=scheduling_timezone,
+            outside_assignments=outside_assignments,
+        )
+
     return ScheduleResult(
         status=status_name,
         assignments=None,
+        conflicts=conflicts,
     )
-

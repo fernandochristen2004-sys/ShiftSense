@@ -326,6 +326,7 @@ class FixedAssignment:
 class ScheduleResult:
     status: str
     assignments: dict[int, dict[str, list[int]]] | None
+    conflicts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

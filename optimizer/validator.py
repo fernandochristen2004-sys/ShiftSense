@@ -15,6 +15,8 @@ def validate_schedule(
     policy: SchedulingPolicy | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
     outside_assignments: tuple[FixedAssignment, ...] = (),
+    locked_assignments: dict[int, dict[str, list[int]]] | None = None,
+    excluded_assignments: dict[int, list[int]] | None = None,
 ) -> list[str]:
     """
     Validate a generated schedule.
@@ -236,5 +238,35 @@ def validate_schedule(
                     f"rest against an outside assignment "
                     f"for shift {shift.id}."
                 )
+
+
+    # Check that locked assignments are preserved.
+    if locked_assignments is not None:
+        for shift_id, role_locks in locked_assignments.items():
+            scheduled_roles = schedule.get(shift_id, {})
+
+            for skill, locked_employee_ids in role_locks.items():
+                assigned_ids = scheduled_roles.get(skill, [])
+
+                for employee_id in locked_employee_ids:
+                    if employee_id not in assigned_ids:
+                        errors.append(
+                            f"Shift {shift_id}, role {skill}: "
+                            f"locked employee {employee_id} "
+                            "is missing from the schedule."
+                        )
+
+
+    # Check that excluded employees are not assigned to shifts.
+    if excluded_assignments is not None:
+        for shift_id, excluded_ids in excluded_assignments.items():
+            assigned_ids = assigned_by_shift.get(shift_id, set())
+
+            for employee_id in excluded_ids:
+                if employee_id in assigned_ids:
+                    errors.append(
+                        f"Shift {shift_id}: excluded employee "
+                        f"{employee_id} is assigned to the shift."
+                    )
 
     return errors
