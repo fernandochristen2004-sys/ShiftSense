@@ -1,4 +1,4 @@
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException, FixedAssignment
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule, get_shift_duration_minutes
 from optimizer.solver import shifts_overlap, shifts_violate_rest
@@ -768,6 +768,144 @@ def test_solver_rejects_shift_outside_local_availability():
         [employee],
         [shift],
         scheduling_timezone=malaysia_timezone,
+    )
+
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+
+def test_outside_assignment_blocks_insufficient_rest():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=(
+            available_interval(0, 7, 0, 11),
+        ),
+    )
+
+    outside = (
+        FixedAssignment(
+            employee_id=1,
+            shift=make_shift(100, -1, 15, 23, 1, "server"),
+        ),
+    )
+
+    monday_shift = make_shift(1, 0, 7, 11, 1, "server")
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+    )
+
+    result = generate_schedule(
+        [employee],
+        [monday_shift],
+        policy=policy,
+        outside_assignments=outside,
+    )
+
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+
+def test_outside_assignment_allows_exact_minimum_rest():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=(
+            available_interval(0, 10, 0, 14),
+        ),
+    )
+
+    outside = (
+        FixedAssignment(
+            employee_id=1,
+            shift=make_shift(100, -1, 15, 23, 1, "server"),
+        ),
+    )
+
+    monday_shift = make_shift(1, 0, 10, 14, 1, "server")
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+    )
+
+    result = generate_schedule(
+        [employee],
+        [monday_shift],
+        policy=policy,
+        outside_assignments=outside,
+    )
+
+    assert result.status == "OPTIMAL"
+    assert result.assignments == {1: [1]}
+
+
+def test_future_outside_assignment_blocks_late_shift():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=(
+            available_interval(6, 17, 6, 23),
+        ),
+    )
+
+    outside = (
+        FixedAssignment(
+            employee_id=1,
+            shift=make_shift(100, 7, 7, 11, 1, "server"),
+        ),
+    )
+
+    sunday_shift = make_shift(1, 6, 17, 23, 1, "server")
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+    )
+
+    result = generate_schedule(
+        [employee],
+        [sunday_shift],
+        policy=policy,
+        outside_assignments=outside,
+    )
+
+    assert result.status == "INFEASIBLE"
+    assert result.assignments is None
+
+
+def test_outside_assignment_blocks_overlap_without_rest_policy():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=(
+            available_interval(0, 9, 0, 17),
+        ),
+    )
+
+    outside = (
+        FixedAssignment(
+            employee_id=1,
+            shift=make_shift(100, 0, 10, 14, 1, "server"),
+        ),
+    )
+
+    planning_shift = make_shift(1, 0, 9, 13, 1, "server")
+
+    result = generate_schedule(
+        [employee],
+        [planning_shift],
+        outside_assignments=outside,
     )
 
     assert result.status == "INFEASIBLE"

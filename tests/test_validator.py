@@ -1,4 +1,4 @@
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, WeeklyAvailability, AvailabilityException, FixedAssignment
 from optimizer.validator import validate_schedule
 from optimizer.sample_data import employees, shifts
 from optimizer.solver import generate_schedule
@@ -615,3 +615,146 @@ def test_validator_accepts_exception_working_hours():
         [shift],
         {1: [1]},
     ) == []
+
+def test_validator_rejects_outside_rest_violation():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=(
+            (
+                datetime(2026, 11, 23, 7, tzinfo=timezone.utc),
+                datetime(2026, 11, 23, 14, tzinfo=timezone.utc),
+            ),
+        ),
+    )
+
+    outside = FixedAssignment(
+        employee_id=1,
+        shift=DateTimeShift(
+            id=100,
+            starts_at=datetime(2026, 11, 22, 15, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 11, 22, 23, tzinfo=timezone.utc),
+            required_staff=1,
+            required_skill="server",
+        ),
+    )
+
+    monday_shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 23, 7, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 23, 11, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+    )
+
+    errors = validate_schedule(
+        [employee],
+        [monday_shift],
+        {1: [1]},
+        policy=policy,
+        outside_assignments=(outside,),
+    )
+
+    assert any(
+        "outside assignment" in error
+        for error in errors
+    )
+
+
+def test_validator_allows_exact_outside_rest():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=(
+            (
+                datetime(2026, 11, 23, 10, tzinfo=timezone.utc),
+                datetime(2026, 11, 23, 14, tzinfo=timezone.utc),
+            ),
+        ),
+    )
+
+    outside = FixedAssignment(
+        employee_id=1,
+        shift=DateTimeShift(
+            id=100,
+            starts_at=datetime(2026, 11, 22, 15, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 11, 22, 23, tzinfo=timezone.utc),
+            required_staff=1,
+            required_skill="server",
+        ),
+    )
+
+    monday_shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 23, 10, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 23, 14, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    policy = SchedulingPolicy(
+        minimum_rest_hours=11,
+        enforce_minimum_rest=True,
+    )
+
+    errors = validate_schedule(
+        [employee],
+        [monday_shift],
+        {1: [1]},
+        policy=policy,
+        outside_assignments=(outside,),
+    )
+
+    assert errors == []
+
+
+def test_validator_rejects_outside_overlap_without_rest():
+    employee = Employee(
+        id=1,
+        name="Alice",
+        skills=frozenset({"server"}),
+        max_hours=20,
+        datetime_availability=(
+            (
+                datetime(2026, 11, 23, 9, tzinfo=timezone.utc),
+                datetime(2026, 11, 23, 17, tzinfo=timezone.utc),
+            ),
+        ),
+    )
+
+    outside = FixedAssignment(
+        employee_id=1,
+        shift=DateTimeShift(
+            id=100,
+            starts_at=datetime(2026, 11, 23, 10, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 11, 23, 14, tzinfo=timezone.utc),
+            required_staff=1,
+            required_skill="server",
+        ),
+    )
+
+    planning_shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 23, 9, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 23, 13, tzinfo=timezone.utc),
+        required_staff=1,
+        required_skill="server",
+    )
+
+    errors = validate_schedule(
+        [employee],
+        [planning_shift],
+        {1: [1]},
+        outside_assignments=(outside,),
+    )
+
+    assert any("overlapping outside assignment" in error for error in errors)

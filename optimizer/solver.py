@@ -1,5 +1,5 @@
 from ortools.sat.python import cp_model
-from optimizer.models import Employee, ScheduleResult, SchedulingPolicy, DateTimeShift
+from optimizer.models import Employee, ScheduleResult, SchedulingPolicy, DateTimeShift, FixedAssignment
 from optimizer.repair import validate_original_schedule
 from optimizer.input_validator import validate_scheduling_inputs
 from optimizer.timeutils import (
@@ -41,10 +41,15 @@ def generate_schedule(
     original_schedule: dict[int, list[int]] | None = None,
     policy: SchedulingPolicy | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
+    outside_assignments: tuple[FixedAssignment, ...] = (),
 ):
         
     # Validate the complete scheduling dataset.
-    validate_scheduling_inputs(employees, shifts)
+    validate_scheduling_inputs(
+        employees,
+        shifts,
+        outside_assignments,
+    )
 
     # Validate the original schedule before attempting repair.
     if original_schedule is not None:
@@ -138,6 +143,30 @@ def generate_schedule(
                             + assignments[(employee.id, second_shift.id)]
                             <= 1
                         )
+
+    # Respect fixed assignments outside the planning window.
+    for outside in outside_assignments:
+        for shift in shifts:
+            # Outside assignments are facts, not decision variables.
+            assignment = assignments[
+                (outside.employee_id, shift.id)
+            ]
+
+            # An employee cannot work overlapping shifts.
+            if datetime_shifts_overlap(outside.shift, shift):
+                model.add(assignment == 0)
+                continue
+
+            # Enforce minimum rest against fixed outside shifts.
+            if (
+                policy.enforce_minimum_rest
+                and datetime_shifts_violate_minimum_rest(
+                    outside.shift,
+                    shift,
+                    policy.minimum_rest_hours * 60,
+                )
+            ):
+                model.add(assignment == 0)
 
     # Ensure employees do not exceed their maximum working hours.
     for employee in employees:

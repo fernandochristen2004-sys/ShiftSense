@@ -1,7 +1,7 @@
 import pytest
 
 from datetime import datetime, timezone, time, date
-from optimizer.models import Employee, DateTimeShift, SchedulingPolicy, WeeklyAvailability, AvailabilityException
+from optimizer.models import Employee, DateTimeShift, SchedulingPolicy, WeeklyAvailability, AvailabilityException, FixedAssignment
 from optimizer.input_validator import validate_scheduling_inputs
 
 
@@ -297,3 +297,130 @@ def test_employee_rejects_datetime_with_exceptions():
                 ),
             ),
         )
+
+
+def test_valid_outside_assignment():
+    employees = [
+        Employee(1, "Alice", frozenset({"server"}), 20),
+    ]
+
+    outside = (
+        FixedAssignment(
+            employee_id=1,
+            shift=make_shift(100, -1, 15, 23, 1, "server"),
+        ),
+    )
+
+    validate_scheduling_inputs(
+        employees,
+        [],
+        outside_assignments=outside,
+    )
+
+
+def test_outside_assignment_unknown_employee():
+    employees = [
+        Employee(1, "Alice", frozenset({"server"}), 20),
+    ]
+
+    outside = (
+        FixedAssignment(
+            employee_id=99,
+            shift=make_shift(100, -1, 15, 23, 1, "server"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unknown employee"):
+        validate_scheduling_inputs(
+            employees,
+            [],
+            outside_assignments=outside,
+        )
+
+
+def test_outside_assignment_conflicting_shift_id():
+    employees = [
+        Employee(1, "Alice", frozenset({"server"}), 20),
+    ]
+
+    planning_shift = make_shift(1, 0, 9, 13, 1, "server")
+
+    outside = (
+        FixedAssignment(
+            employee_id=1,
+            shift=make_shift(1, -1, 15, 23, 1, "server"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="conflicts"):
+        validate_scheduling_inputs(
+            employees,
+            [planning_shift],
+            outside_assignments=outside,
+        )
+
+
+def test_fixed_assignment_rejects_invalid_employee_id():
+    shift = make_shift(100, -1, 15, 23, 1, "server")
+
+    with pytest.raises(ValueError):
+        FixedAssignment(
+            employee_id=0,
+            shift=shift,
+        )
+
+
+def test_fixed_assignment_rejects_invalid_shift():
+    with pytest.raises(ValueError):
+        FixedAssignment(
+            employee_id=1,
+            shift="Sunday evening",
+        )
+
+
+def test_rejects_duplicate_outside_assignments():
+    employees = [
+        Employee(1, "Alice", frozenset({"server"}), 20),
+    ]
+
+    outside_shift = make_shift(
+        100, -1, 15, 23, 1, "server"
+    )
+
+    outside = (
+        FixedAssignment(1, outside_shift),
+        FixedAssignment(1, outside_shift),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Duplicate outside fixed assignment",
+    ):
+        validate_scheduling_inputs(
+            employees,
+            [],
+            outside_assignments=outside,
+        )
+
+
+def test_allows_distinct_outside_assignments():
+    employees = [
+        Employee(1, "Alice", frozenset({"server"}), 20),
+    ]
+
+    outside = (
+        FixedAssignment(
+            1,
+            make_shift(100, -2, 9, 13, 1, "server"),
+        ),
+        FixedAssignment(
+            1,
+            make_shift(101, -1, 15, 23, 1, "server"),
+        ),
+    )
+
+    validate_scheduling_inputs(
+        employees,
+        [],
+        outside_assignments=outside,
+    )

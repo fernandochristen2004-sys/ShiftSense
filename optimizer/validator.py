@@ -1,4 +1,4 @@
-from optimizer.models import Employee, SchedulingPolicy, DateTimeShift
+from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, FixedAssignment
 from optimizer.timeutils import (
     datetime_shifts_overlap,
     datetime_shifts_violate_minimum_rest,
@@ -13,6 +13,7 @@ def validate_schedule(
     schedule: dict[int, list[int]],
     policy: SchedulingPolicy | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
+    outside_assignments: tuple[FixedAssignment, ...] = (),
 ) -> list[str]:
     """
     Validate a generated schedule.
@@ -161,5 +162,32 @@ def validate_schedule(
                             f"rest between shifts {first_shift.id} "
                             f"and {second_shift.id}."
                         )
+
+    # Check assignments against fixed outside commitments.
+    for outside in outside_assignments:
+        for shift in shifts:
+            if outside.employee_id not in schedule.get(shift.id, []):
+                continue
+
+            if datetime_shifts_overlap(outside.shift, shift):
+                errors.append(
+                    f"Employee {outside.employee_id} has an overlapping "
+                    f"outside assignment for shift {shift.id}."
+                )
+                continue
+
+            if (
+                policy.enforce_minimum_rest
+                and datetime_shifts_violate_minimum_rest(
+                    outside.shift,
+                    shift,
+                    policy.minimum_rest_hours * 60,
+                )
+            ):
+                errors.append(
+                    f"Employee {outside.employee_id} violates minimum "
+                    f"rest against an outside assignment "
+                    f"for shift {shift.id}."
+                )
 
     return errors

@@ -277,7 +277,22 @@ class DateTimeShift:
                 "Required skill cannot be empty."
             )
 
+@dataclass(frozen=True)
+class FixedAssignment:
+    employee_id: int
+    shift: DateTimeShift
 
+    def __post_init__(self):
+        if type(self.employee_id) is not int or self.employee_id <= 0:
+            raise ValueError(
+                "Fixed assignment employee ID must be positive."
+            )
+
+        if not isinstance(self.shift, DateTimeShift):
+            raise ValueError(
+                "Fixed assignment must contain a DateTimeShift."
+            )
+        
 @dataclass(frozen=True)
 class ScheduleResult:
     status: str
