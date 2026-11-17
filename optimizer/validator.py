@@ -1,7 +1,7 @@
 from optimizer.models import Employee, SchedulingPolicy, DateTimeShift, FixedAssignment
 from optimizer.timeutils import (
     datetime_shifts_overlap,
-    datetime_shifts_violate_minimum_rest,
+    datetime_shifts_violate_rest_policy,
     employee_is_available,
     shift_duration_minutes,
 )
@@ -196,10 +196,13 @@ def validate_schedule(
 
                     # Check minimum rest using the correct time model.
                     violates_rest = (
-                        datetime_shifts_violate_minimum_rest(
+                        datetime_shifts_violate_rest_policy(
                             first_shift,
                             second_shift,
                             policy.minimum_rest_hours * 60,
+                            policy.allow_split_shifts,
+                            policy.split_shift_min_break_minutes,
+                            policy.max_split_span_minutes,
                         )
                     )
 
@@ -227,10 +230,13 @@ def validate_schedule(
 
             if (
                 policy.enforce_minimum_rest
-                and datetime_shifts_violate_minimum_rest(
+                and datetime_shifts_violate_rest_policy(
                     outside.shift,
                     shift,
                     policy.minimum_rest_hours * 60,
+                    policy.allow_split_shifts,
+                    policy.split_shift_min_break_minutes,
+                    policy.max_split_span_minutes,
                 )
             ):
                 errors.append(

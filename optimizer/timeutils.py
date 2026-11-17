@@ -1,5 +1,6 @@
 from optimizer.models import DateTimeShift, WeeklyAvailability, AvailabilityException, Employee
 from datetime import datetime, timezone, date, tzinfo, timedelta, time
+from decimal import Decimal, InvalidOperation
 
 def minutes_from_start(
     timestamp: datetime,
@@ -67,6 +68,60 @@ def datetime_shifts_violate_minimum_rest(
     )
 
     return rest_minutes < minimum_rest_minutes
+
+
+def datetime_shifts_violate_rest_policy(
+    first: DateTimeShift,
+    second: DateTimeShift,
+    minimum_rest_minutes: int,
+    allow_split_shifts: bool = False,
+    split_shift_min_break_minutes: int = 120,
+    max_split_span_minutes: int = 780,
+) -> bool:
+    """
+    Check whether two shifts violate the configured rest policy.
+
+    Non-overlapping shifts are allowed when they satisfy normal
+    minimum rest or qualify as a split-shift pair.
+    """
+
+    # Overlaps are handled separately by the solver and validator.
+    if datetime_shifts_overlap(first, second):
+        return False
+
+    # Identify chronological order without using calendar dates.
+    if first.starts_at <= second.starts_at:
+        earlier, later = first, second
+    else:
+        earlier, later = second, first
+
+    # Calculate actual elapsed time in UTC.
+    gap = (
+        later.starts_at.astimezone(timezone.utc)
+        - earlier.ends_at.astimezone(timezone.utc)
+    )
+
+    span = (
+        later.ends_at.astimezone(timezone.utc)
+        - earlier.starts_at.astimezone(timezone.utc)
+    )
+
+    gap_minutes = int(gap.total_seconds() // 60)
+    span_minutes = int(span.total_seconds() // 60)
+
+    # Normal rest is always sufficient.
+    if gap_minutes >= minimum_rest_minutes:
+        return False
+
+    # Split shifts are an exception to normal minimum rest.
+    if (
+        allow_split_shifts
+        and gap_minutes >= split_shift_min_break_minutes
+        and span_minutes <= max_split_span_minutes
+    ):
+        return False
+
+    return True
 
 def shift_duration_minutes(shift: DateTimeShift) -> int:
     """Return the shift duration in whole minutes."""
@@ -344,3 +399,28 @@ def employee_is_available(
         shift_fits_interval(shift, start, end)
         for start, end in merged
     )
+
+def hours_to_minutes(hours: int | float | str | Decimal) -> int:
+    """Convert hours to exact whole minutes."""
+
+    if isinstance(hours, bool):
+        raise ValueError("Hours must be a numeric value.")
+
+    try:
+        value = Decimal(str(hours))
+    except (InvalidOperation, ValueError):
+        raise ValueError("Hours must be a numeric value.") from None
+
+    if not value.is_finite() or value < 0:
+        raise ValueError(
+            "Hours must be finite and non-negative."
+        )
+
+    minutes = value * 60
+
+    if minutes != minutes.to_integral_value():
+        raise ValueError(
+            "Hours must represent a whole number of minutes."
+        )
+
+    return int(minutes)

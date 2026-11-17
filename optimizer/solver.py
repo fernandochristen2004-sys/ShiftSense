@@ -7,9 +7,12 @@ from optimizer.timeutils import (
     datetime_shifts_violate_minimum_rest,
     shift_duration_minutes,
     employee_is_available,
+    datetime_shifts_violate_rest_policy,
 )
 from datetime import timezone, tzinfo
 from optimizer.lock_conflicts import find_lock_conflicts
+from optimizer.staged_solver import OptimizationStage, solve_stages
+from optimizer.schedule_metrics import calculate_schedule_metrics
 
 def get_shift_duration_minutes(
     shift: DateTimeShift,
@@ -28,12 +31,18 @@ def shifts_violate_rest(
     first: DateTimeShift,
     second: DateTimeShift,
     minimum_rest_hours: int,
+    allow_split_shifts: bool = False,
+    split_shift_min_break_minutes: int = 120,
+    max_split_span_minutes: int = 780,
 ) -> bool:
-    """Check minimum rest between datetime shifts."""
-    return datetime_shifts_violate_minimum_rest(
+    """Check the configured rest and split-shift rules."""
+    return datetime_shifts_violate_rest_policy(
         first,
         second,
         minimum_rest_hours * 60,
+        allow_split_shifts,
+        split_shift_min_break_minutes,
+        max_split_span_minutes,
     )
 
 def generate_schedule(
@@ -70,6 +79,13 @@ def generate_schedule(
         return ScheduleResult(
             status="OPTIMAL",
             assignments={},
+            objective_values={},
+            stage_statuses={"feasibility": "OPTIMAL"},
+            schedule_metrics=calculate_schedule_metrics(
+                employees,
+                shifts,
+                {},
+            ),
         )
 
     # Use the default scheduling policy if none is provided.
@@ -188,6 +204,9 @@ def generate_schedule(
                         first_shift,
                         second_shift,
                         policy.minimum_rest_hours,
+                        policy.allow_split_shifts,
+                        policy.split_shift_min_break_minutes,
+                        policy.max_split_span_minutes,
                     )
 
                     if violates_rest:
@@ -213,10 +232,13 @@ def generate_schedule(
             # Enforce minimum rest against fixed outside shifts.
             if (
                 policy.enforce_minimum_rest
-                and datetime_shifts_violate_minimum_rest(
+                and datetime_shifts_violate_rest_policy(
                     outside.shift,
                     shift,
                     policy.minimum_rest_hours * 60,
+                    policy.allow_split_shifts,
+                    policy.split_shift_min_break_minutes,
+                    policy.max_split_span_minutes,
                 )
             ):
                 model.add(assignment == 0)
@@ -241,39 +263,124 @@ def generate_schedule(
             for shift in shifts
         )
 
-    # Find the highest and lowest assigned working minutes.
+
+    # Calculate the total available shift minutes.
+    # Used to bound target-deviation and fairness variables.
     max_possible_minutes = sum(
         get_shift_duration_minutes(shift)
         for shift in shifts
     )
 
-    maximum_minutes = model.new_int_var(
-        0, max_possible_minutes, "maximum_assigned_minutes"
-    )
 
-    minimum_minutes = model.new_int_var(
-        0, max_possible_minutes, "minimum_assigned_minutes"
-    )
+    # Build fairness objectives for employees with target hours.
+    target_deviations = []
+    untargeted_minutes = []
 
-    model.add_max_equality(
-        maximum_minutes,
-        list(employee_minutes.values())
-    )
+    for employee in employees:
+        assigned_minutes = employee_minutes[employee.id]
 
-    model.add_min_equality(
-        minimum_minutes,
-        list(employee_minutes.values())
-    )
+        if employee.target_minutes is None:
+            untargeted_minutes.append(assigned_minutes)
+            continue
 
-    # Select the optimization objective.
-    if original_schedule is None:
-        # Only optimize fairness when enabled.
-        if policy.fairness_enabled:
-            model.minimize(maximum_minutes - minimum_minutes)
+        # Deviation is the absolute difference between assigned
+        # working minutes and the employee's preferred target.
+        deviation_limit = max(
+            max_possible_minutes,
+            employee.target_minutes,
+        )
+
+        deviation = model.new_int_var(
+            0,
+            deviation_limit,
+            f"target_deviation_employee_{employee.id}",
+        )
+
+        model.add_abs_equality(
+            deviation,
+            assigned_minutes - employee.target_minutes,
+        )
+
+        target_deviations.append(deviation)
+
+    # Total deviation across employees with explicit targets.
+    total_target_deviation = None
+    maximum_target_deviation = None
+
+    if target_deviations:
+        total_deviation_limit = sum(
+            max(
+                max_possible_minutes,
+                employee.target_minutes,
+            )
+            for employee in employees
+            if employee.target_minutes is not None
+        )
+
+        total_target_deviation = model.new_int_var(
+            0,
+            total_deviation_limit,
+            "total_target_deviation",
+        )
+
+        model.add(
+            total_target_deviation == sum(target_deviations)
+        )
+
+        maximum_target_deviation = model.new_int_var(
+            0,
+            total_deviation_limit,
+            "maximum_target_deviation",
+        )
+
+        model.add_max_equality(
+            maximum_target_deviation,
+            target_deviations,
+        )
+
+    # Balance workloads only among employees without targets.
+    untargeted_gap = None
+
+    if len(untargeted_minutes) >= 2:
+        untargeted_maximum = model.new_int_var(
+            0,
+            max_possible_minutes,
+            "untargeted_maximum_minutes",
+        )
+
+        untargeted_minimum = model.new_int_var(
+            0,
+            max_possible_minutes,
+            "untargeted_minimum_minutes",
+        )
+
+        model.add_max_equality(
+            untargeted_maximum,
+            untargeted_minutes,
+        )
+
+        model.add_min_equality(
+            untargeted_minimum,
+            untargeted_minutes,
+        )
+
+        untargeted_gap = model.new_int_var(
+            0,
+            max_possible_minutes,
+            "untargeted_workload_gap",
+        )
+
+        model.add(
+            untargeted_gap
+            == untargeted_maximum - untargeted_minimum
+        )
 
     
-    else:
-        # Repair: minimize changes to the original schedule.
+    # Build optimization stages in strict priority order.
+    stages = []
+
+    if original_schedule is not None:
+        # Repair: minimizing disruption takes highest priority.
         assignment_changes = []
 
         for employee in employees:
@@ -294,44 +401,98 @@ def generate_schedule(
                     # Adding an employee costs one change.
                     assignment_changes.append(assignment)
                 else:
-                    # Removing the employee or changing their role
-                    # each costs one change.
+                    # Removing or changing role costs one change.
                     original_assignment = role_assignments.get(
                         (employee.id, shift.id, original_role)
                     )
 
                     if original_assignment is None:
-                        # The original role is no longer eligible.
                         assignment_changes.append(1)
                     else:
                         assignment_changes.append(
                             1 - original_assignment
                         )
 
-        # Minimize disruption, with optional fairness as a tie-breaker.
         total_changes = sum(assignment_changes)
 
-        if policy.fairness_enabled:
-            fairness_gap = maximum_minutes - minimum_minutes
-            disruption_weight = max_possible_minutes + 1
-
-            model.minimize(
-                disruption_weight * total_changes
-                + fairness_gap
+        stages.append(
+            OptimizationStage(
+                "disruption",
+                total_changes,
             )
-        else:
-            model.minimize(total_changes)
+        )
 
-    # Create the solver and search for a valid schedule.
-    solver = cp_model.CpSolver()
-    status = solver.solve(model)
-    status_name = solver.status_name(status)
+    # Add fairness objectives only when enabled.
+    if policy.fairness_enabled:
+        if total_target_deviation is not None:
+            stages.append(
+                OptimizationStage(
+                    "target_deviation_min",
+                    total_target_deviation,
+                )
+            )
 
-    # Return the generated schedule without printing.
-    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            stages.append(
+                OptimizationStage(
+                    "max_deviation_min",
+                    maximum_target_deviation,
+                )
+            )
+
+        if untargeted_gap is not None:
+            stages.append(
+                OptimizationStage(
+                    "untargeted_gap_min",
+                    untargeted_gap,
+                )
+            )
+
+
+    # Solve using staged optimization when objectives exist.
+    objective_values = {}
+    stage_statuses = {}
+
+    if stages:
+        # Track role assignments for schedule reconstruction.
+        tracked_variables = list(role_assignments.values())
+
+        staged_result = solve_stages(
+            model=model,
+            stages=stages,
+            tracked_variables=tracked_variables,
+            time_limit_seconds=10.0,
+        )
+
+        status_name = staged_result.status
+        solution_values = staged_result.variable_values
+        objective_values = staged_result.objective_values
+        stage_statuses = staged_result.stage_statuses
+
+    else:
+        # Feasibility-only mode: no optimization objective.
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = 10.0
+
+        status = solver.solve(model)
+        status_name = solver.status_name(status)
+
+        solution_values = None
+
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            solution_values = {
+                variable.index: solver.value(variable)
+                for variable in role_assignments.values()
+            }
+
+        stage_statuses = {
+            "feasibility": status_name,
+        }
+
+
+    # Return the best retained schedule without printing.
+    if solution_values is not None:
         schedule = {}
 
-        
         for shift in shifts:
             schedule[shift.id] = {}
 
@@ -346,22 +507,30 @@ def generate_schedule(
                         shift.id,
                         skill,
                     ) in role_assignments
-                    and solver.value(
+                    and solution_values[
                         role_assignments[
                             (employee.id, shift.id, skill)
-                        ]
-                    ) == 1
+                        ].index
+                    ] == 1
                 ]
 
         return ScheduleResult(
             status=status_name,
             assignments=schedule,
+            objective_values=objective_values,
+            stage_statuses=stage_statuses,
+            schedule_metrics=calculate_schedule_metrics(
+                    employees,
+                    shifts,
+                    schedule,
+                ),
         )
 
-    # Explain direct lock conflicts when no valid schedule exists.
+    # Explain direct lock conflicts only when infeasibility
+    # has actually been proven.
     conflicts = ()
 
-    if status == cp_model.INFEASIBLE:
+    if status_name == "INFEASIBLE":
         conflicts = find_lock_conflicts(
             employees=employees,
             shifts=shifts,
@@ -375,4 +544,6 @@ def generate_schedule(
         status=status_name,
         assignments=None,
         conflicts=conflicts,
+        objective_values=objective_values,
+        stage_statuses=stage_statuses,
     )

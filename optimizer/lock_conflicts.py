@@ -7,7 +7,7 @@ from optimizer.models import (
 )
 from optimizer.timeutils import (
     datetime_shifts_overlap,
-    datetime_shifts_violate_minimum_rest,
+    datetime_shifts_violate_rest_policy,
     employee_is_available,
     shift_duration_minutes,
 )
@@ -103,10 +103,13 @@ def find_lock_conflicts(
 
                 if (
                     policy.enforce_minimum_rest
-                    and datetime_shifts_violate_minimum_rest(
+                    and datetime_shifts_violate_rest_policy(
                         first_shift,
                         second_shift,
                         policy.minimum_rest_hours * 60,
+                        policy.allow_split_shifts,
+                        policy.split_shift_min_break_minutes,
+                        policy.max_split_span_minutes,
                     )
                 ):
                     conflicts.append(
@@ -136,10 +139,13 @@ def find_lock_conflicts(
 
                 if (
                     policy.enforce_minimum_rest
-                    and datetime_shifts_violate_minimum_rest(
+                    and datetime_shifts_violate_rest_policy(
                         shift,
                         outside.shift,
                         policy.minimum_rest_hours * 60,
+                        policy.allow_split_shifts,
+                        policy.split_shift_min_break_minutes,
+                        policy.max_split_span_minutes,
                     )
                 ):
                     conflicts.append(

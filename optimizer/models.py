@@ -130,6 +130,7 @@ class Employee:
     availability_exceptions: tuple[
         AvailabilityException, ...
     ] = ()
+    target_minutes: int | None = None
 
     def __post_init__(self):
         if self.id <= 0:
@@ -221,6 +222,24 @@ class Employee:
                     raise ValueError(
                         "Availability end must be after start."
                     )
+
+        # Validate the optional preferred workload target.
+        if self.target_minutes is not None:
+            if type(self.target_minutes) is not int:
+                raise ValueError(
+                    "Target minutes must be an integer."
+                )
+
+            if self.target_minutes < 0:
+                raise ValueError(
+                    "Target minutes cannot be negative."
+                )
+
+            if self.target_minutes > self.max_hours * 60:
+                raise ValueError(
+                    "Target minutes cannot exceed maximum working hours."
+                )
+
 
 @dataclass(frozen=True)
 class ShiftRequirement:
@@ -327,6 +346,9 @@ class ScheduleResult:
     status: str
     assignments: dict[int, dict[str, list[int]]] | None
     conflicts: tuple[str, ...] = ()
+    objective_values: dict[str, int] | None = None
+    stage_statuses: dict[str, str] | None = None
+    schedule_metrics: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +356,9 @@ class SchedulingPolicy:
     minimum_rest_hours: int = 0
     enforce_minimum_rest: bool = False
     fairness_enabled: bool = True
+    allow_split_shifts: bool = False
+    split_shift_min_break_minutes: int = 120
+    max_split_span_minutes: int = 780
 
     def __post_init__(self):
         if type(self.minimum_rest_hours) is not int:
@@ -346,12 +371,47 @@ class SchedulingPolicy:
                 "Minimum rest hours cannot be negative."
             )
 
-        if not isinstance(self.enforce_minimum_rest, bool):
+        if type(self.enforce_minimum_rest) is not bool:
             raise ValueError(
                 "Enforce minimum rest must be a Boolean."
             )
 
-        if not isinstance(self.fairness_enabled, bool):
+        if type(self.fairness_enabled) is not bool:
             raise ValueError(
                 "Fairness enabled must be a Boolean."
+            )
+
+        if type(self.allow_split_shifts) is not bool:
+            raise ValueError(
+                "Allow split shifts must be a Boolean."
+            )
+
+        if (
+            type(self.split_shift_min_break_minutes) is not int
+            or self.split_shift_min_break_minutes <= 0
+        ):
+            raise ValueError(
+                "Split-shift minimum break must be "
+                "a positive integer number of minutes."
+            )
+
+        if (
+            type(self.max_split_span_minutes) is not int
+            or self.max_split_span_minutes
+            <= self.split_shift_min_break_minutes
+        ):
+            raise ValueError(
+                "Maximum split span must exceed "
+                "the minimum split break."
+            )
+
+        if (
+            self.allow_split_shifts
+            and self.enforce_minimum_rest
+            and self.split_shift_min_break_minutes
+            >= self.minimum_rest_hours * 60
+        ):
+            raise ValueError(
+                "Split-shift minimum break must be shorter "
+                "than the normal minimum rest period."
             )
