@@ -240,11 +240,11 @@ class Employee:
                     "Target minutes cannot exceed maximum working hours."
                 )
 
-
 @dataclass(frozen=True)
 class ShiftRequirement:
     skill: str
     count: int
+    min_count: int | None = None
 
     def __post_init__(self):
         if not isinstance(self.skill, str) or not self.skill.strip():
@@ -256,6 +256,29 @@ class ShiftRequirement:
             raise ValueError(
                 "Requirement count must be a non-negative integer."
             )
+
+        if self.min_count is not None:
+            if (
+                type(self.min_count) is not int
+                or not 0 <= self.min_count <= self.count
+            ):
+                raise ValueError(
+                    "Requirement minimum count must be an integer "
+                    "between zero and the target count."
+                )
+
+    @property
+    def target_count(self) -> int:
+        """Return the desired staffing level."""
+        return self.count
+
+    @property
+    def effective_min_count(self) -> int:
+        """Return the minimum staffing level."""
+        if self.min_count is None:
+            return self.count
+        return self.min_count
+
 
 @dataclass(frozen=True)
 class DateTimeShift:
@@ -340,7 +363,15 @@ class FixedAssignment:
             raise ValueError(
                 "Fixed assignment must contain a DateTimeShift."
             )
-        
+
+
+@dataclass(frozen=True)
+class StaffingShortage:
+    shift_id: int
+    role: str
+    missing: int
+
+
 @dataclass(frozen=True)
 class ScheduleResult:
     status: str
@@ -349,7 +380,9 @@ class ScheduleResult:
     objective_values: dict[str, int] | None = None
     stage_statuses: dict[str, str] | None = None
     schedule_metrics: dict[str, int] | None = None
-
+    fully_covered: bool | None = None
+    shortages: tuple[StaffingShortage, ...] = ()
+    assignment_changes: int | None = None
 
 @dataclass(frozen=True)
 class SchedulingPolicy:
@@ -359,6 +392,7 @@ class SchedulingPolicy:
     allow_split_shifts: bool = False
     split_shift_min_break_minutes: int = 120
     max_split_span_minutes: int = 780
+    allow_partial_coverage: bool = False
 
     def __post_init__(self):
         if type(self.minimum_rest_hours) is not int:
@@ -414,4 +448,9 @@ class SchedulingPolicy:
             raise ValueError(
                 "Split-shift minimum break must be shorter "
                 "than the normal minimum rest period."
+            )
+
+        if type(self.allow_partial_coverage) is not bool:
+            raise ValueError(
+                "Allow partial coverage must be a Boolean."
             )

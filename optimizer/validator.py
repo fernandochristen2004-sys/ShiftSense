@@ -79,12 +79,28 @@ def validate_schedule(
                 )
                 continue
 
-            if len(assigned_ids) != requirement.count:
-                errors.append(
-                    f"Shift {shift.id}, role {skill}: expected "
-                    f"{requirement.count} employees, "
-                    f"found {len(assigned_ids)}."
-                )
+            assigned_count = len(assigned_ids)
+
+            if not policy.allow_partial_coverage:
+                # Preserve exact staffing and existing error messages.
+                if assigned_count != requirement.count:
+                    errors.append(
+                        f"Shift {shift.id}, role {skill}: expected "
+                        f"{requirement.count} employees, "
+                        f"found {assigned_count}."
+                    )
+            else:
+                # Partial coverage permits shortages down to the
+                # hard minimum, but never allows overstaffing.
+                minimum = requirement.effective_min_count
+
+                if not minimum <= assigned_count <= requirement.count:
+                    errors.append(
+                        f"Shift {shift.id}, role {skill}: expected "
+                        f"between {minimum} and "
+                        f"{requirement.count} employees, "
+                        f"found {assigned_count}."
+                    )
 
             all_assigned_ids.extend(assigned_ids)
 

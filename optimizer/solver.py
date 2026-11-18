@@ -1,6 +1,6 @@
 from ortools.sat.python import cp_model
 from optimizer.models import Employee, ScheduleResult, SchedulingPolicy, DateTimeShift, FixedAssignment
-from optimizer.repair import validate_original_schedule
+from optimizer.repair import validate_original_schedule, count_assignment_changes
 from optimizer.input_validator import validate_scheduling_inputs
 from optimizer.timeutils import (
     datetime_shifts_overlap,
@@ -13,6 +13,7 @@ from datetime import timezone, tzinfo
 from optimizer.lock_conflicts import find_lock_conflicts
 from optimizer.staged_solver import OptimizationStage, solve_stages
 from optimizer.schedule_metrics import calculate_schedule_metrics
+from optimizer.coverage_metrics import calculate_coverage
 
 def get_shift_duration_minutes(
     shift: DateTimeShift,
@@ -86,6 +87,8 @@ def generate_schedule(
                 shifts,
                 {},
             ),
+            fully_covered=True,
+            shortages=(),
         )
 
     # Use the default scheduling policy if none is provided.
@@ -138,21 +141,49 @@ def generate_schedule(
 
     
     # Add staffing coverage constraints for each required role.
+    shortage_variables = {}
+
     for shift in shifts:
         for requirement in shift.requirements:
-            model.add(
-                sum(
-                    role_assignments[
-                        (employee.id, shift.id, requirement.skill)
-                    ]
-                    for employee in employees
-                    if (
-                        employee.id,
-                        shift.id,
-                        requirement.skill,
-                    ) in role_assignments
-                ) == requirement.count
+            assigned_count = sum(
+                role_assignments[
+                    (employee.id, shift.id, requirement.skill)
+                ]
+                for employee in employees
+                if (
+                    employee.id,
+                    shift.id,
+                    requirement.skill,
+                ) in role_assignments
             )
+
+            if not policy.allow_partial_coverage:
+                # Preserve the original exact-staffing behavior.
+                model.add(assigned_count == requirement.count)
+                continue
+
+            # The minimum remains a hard requirement.
+            model.add(
+                assigned_count >= requirement.effective_min_count
+            )
+
+            # Never schedule more employees than the target.
+            model.add(assigned_count <= requirement.count)
+
+            # Record how many target positions remain unfilled.
+            shortage = model.new_int_var(
+                0,
+                requirement.count - requirement.effective_min_count,
+                f"shortage_shift_{shift.id}_role_{requirement.skill}",
+            )
+
+            model.add(
+                shortage == requirement.count - assigned_count
+            )
+
+            shortage_variables[
+                (shift.id, requirement.skill)
+            ] = shortage
 
 
     # Enforce locked employee assignments within the planning window.
@@ -379,8 +410,19 @@ def generate_schedule(
     # Build optimization stages in strict priority order.
     stages = []
 
+    # Coverage always takes priority over repair and fairness.
+    if policy.allow_partial_coverage and shortage_variables:
+        total_shortage = sum(shortage_variables.values())
+
+        stages.append(
+            OptimizationStage(
+                "coverage_shortage",
+                total_shortage,
+            )
+        )
+
     if original_schedule is not None:
-        # Repair: minimizing disruption takes highest priority.
+        # Repair: minimize disruption after staffing coverage.
         assignment_changes = []
 
         for employee in employees:
@@ -488,7 +530,6 @@ def generate_schedule(
             "feasibility": status_name,
         }
 
-
     # Return the best retained schedule without printing.
     if solution_values is not None:
         schedule = {}
@@ -514,16 +555,34 @@ def generate_schedule(
                     ] == 1
                 ]
 
+        # Calculate coverage from the generated schedule.
+        fully_covered, shortages = calculate_coverage(
+            shifts,
+            schedule,
+        )
+
+        # Measure actual disruption independently of the solver.
+        actual_changes = None
+
+        if original_schedule is not None:
+            actual_changes = count_assignment_changes(
+                original_schedule,
+                schedule,
+            )
+
         return ScheduleResult(
             status=status_name,
             assignments=schedule,
             objective_values=objective_values,
             stage_statuses=stage_statuses,
             schedule_metrics=calculate_schedule_metrics(
-                    employees,
-                    shifts,
-                    schedule,
-                ),
+                employees,
+                shifts,
+                schedule,
+            ),
+            fully_covered=fully_covered,
+            shortages=shortages,
+            assignment_changes=actual_changes,
         )
 
     # Explain direct lock conflicts only when infeasibility
