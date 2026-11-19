@@ -383,7 +383,8 @@ class ScheduleResult:
     fully_covered: bool | None = None
     shortages: tuple[StaffingShortage, ...] = ()
     assignment_changes: int | None = None
-
+    validation_errors: tuple[str, ...] = () 
+    
 @dataclass(frozen=True)
 class SchedulingPolicy:
     minimum_rest_hours: int = 0
