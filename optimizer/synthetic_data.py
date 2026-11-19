@@ -547,3 +547,41 @@ def pick_callout(
     if not assigned:
         raise ValueError("Schedule has no assignments to call out.")
     return Random(seed).choice(assigned)
+
+
+def apply_callout(
+    employees: list[Employee] | tuple[Employee, ...],
+    employee_id: int,
+    shift: DateTimeShift,
+) -> list[Employee]:
+    """Return employees with `employee_id` made unavailable for `shift`.
+
+    Simulates a call-out. Availability intervals that overlap the shift are
+    cut around it, so the employee stays available at other times.
+    """
+    updated: list[Employee] = []
+    found = False
+
+    for employee in employees:
+        if employee.id != employee_id:
+            updated.append(employee)
+            continue
+
+        found = True
+        kept: list[tuple[datetime, datetime]] = []
+
+        for start, end in employee.datetime_availability:
+            if end <= shift.starts_at or start >= shift.ends_at:
+                kept.append((start, end))
+                continue
+            if start < shift.starts_at:
+                kept.append((start, shift.starts_at))
+            if shift.ends_at < end:
+                kept.append((shift.ends_at, end))
+
+        updated.append(replace(employee, datetime_availability=tuple(kept)))
+
+    if not found:
+        raise ValueError(f"Unknown employee {employee_id}.")
+
+    return updated

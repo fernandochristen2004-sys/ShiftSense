@@ -11,6 +11,7 @@ from optimizer.synthetic_data import (
     RestaurantScenario,
     _one_person_can_work_both,
     _role_counts,
+    apply_callout,
     generate_restaurant_scenario,
     pick_callout,
 )
@@ -461,3 +462,62 @@ def test_pick_callout_ignores_dictionary_order():
 def test_pick_callout_rejects_empty_schedule(assignments):
     with pytest.raises(ValueError):
         pick_callout(assignments, seed=0)
+
+
+# Call-out simulation
+
+def _callout_case():
+    scenario = generate_restaurant_scenario(25)
+    shift = scenario.shifts[0]
+    employee = next(e for e in scenario.employees if _available(e, shift))
+    return scenario, shift, employee
+
+
+def test_apply_callout_makes_employee_unavailable_for_shift():
+    scenario, shift, employee = _callout_case()
+
+    updated = apply_callout(scenario.employees, employee.id, shift)
+    called_out = next(e for e in updated if e.id == employee.id)
+
+    assert not _available(called_out, shift)
+
+
+def test_apply_callout_keeps_other_availability():
+    scenario, shift, employee = _callout_case()
+
+    updated = apply_callout(scenario.employees, employee.id, shift)
+    called_out = next(e for e in updated if e.id == employee.id)
+
+    for other in scenario.shifts:
+        if other.starts_at >= shift.ends_at or other.ends_at <= shift.starts_at:
+            assert _available(called_out, other) == _available(employee, other)
+
+
+def test_apply_callout_leaves_other_employees_unchanged():
+    scenario, shift, employee = _callout_case()
+
+    updated = apply_callout(scenario.employees, employee.id, shift)
+
+    for before, after in zip(scenario.employees, updated):
+        if before.id != employee.id:
+            assert before == after
+
+
+def test_apply_callout_intervals_stay_valid():
+    scenario, shift, employee = _callout_case()
+
+    called_out = next(
+        e for e in apply_callout(scenario.employees, employee.id, shift)
+        if e.id == employee.id
+    )
+
+    for start, end in called_out.datetime_availability:
+        assert end > start
+        assert end <= shift.starts_at or start >= shift.ends_at
+
+
+def test_apply_callout_rejects_unknown_employee():
+    scenario = generate_restaurant_scenario(25)
+
+    with pytest.raises(ValueError):
+        apply_callout(scenario.employees, 999_999, scenario.shifts[0])
