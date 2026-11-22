@@ -1,5 +1,6 @@
 """Tests for the synthetic restaurant scenario generator."""
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -12,6 +13,7 @@ from optimizer.synthetic_data import (
     _one_person_can_work_both,
     _role_counts,
     apply_callout,
+    callout_window,
     generate_restaurant_scenario,
     pick_callout,
 )
@@ -467,10 +469,49 @@ def test_pick_callout_rejects_empty_schedule(assignments):
 # Call-out simulation
 
 def _callout_case():
-    scenario = generate_restaurant_scenario(25)
-    shift = scenario.shifts[0]
+    scenario = generate_restaurant_scenario(25, days=7, start_date=MONDAY)
+    # Friday dinner: there is a late close the same night.
+    shift = next(
+        s for s in scenario.shifts
+        if s.starts_at.weekday() == 4 and s.starts_at.hour == 17
+    )
     employee = next(e for e in scenario.employees if _available(e, shift))
     return scenario, shift, employee
+
+
+def _overlaps(shift, start, end):
+    return shift.starts_at < end and start < shift.ends_at
+
+
+def test_callout_window_covers_rest_of_day_by_default():
+    _, shift, _ = _callout_case()
+
+    start, end = callout_window(shift)
+
+    assert start == shift.starts_at
+    assert end == datetime.combine(
+        shift.starts_at.date() + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    ) + timedelta(hours=6)
+
+
+def test_callout_window_can_cover_only_the_shift():
+    _, shift, _ = _callout_case()
+
+    assert callout_window(shift, rest_of_day=False) == (shift.starts_at, shift.ends_at)
+
+
+def test_callout_window_extends_to_shift_end_if_later():
+    # A shift ending after 06:00 the next day keeps its own end.
+    long_shift = DateTimeShift(
+        id=1,
+        starts_at=datetime(2026, 11, 23, 22, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 11, 24, 8, 0, tzinfo=timezone.utc),
+        requirements=(ShiftRequirement("server", 1),),
+    )
+
+    assert callout_window(long_shift)[1] == long_shift.ends_at
 
 
 def test_apply_callout_makes_employee_unavailable_for_shift():
@@ -482,14 +523,58 @@ def test_apply_callout_makes_employee_unavailable_for_shift():
     assert not _available(called_out, shift)
 
 
-def test_apply_callout_keeps_other_availability():
+def test_apply_callout_blocks_the_late_close_the_same_night():
     scenario, shift, employee = _callout_case()
+    late_close = next(
+        s for s in scenario.shifts
+        if s.starts_at.date() == shift.starts_at.date() and s.starts_at.hour == 23
+    )
+    # Make sure the employee could have worked the close before the call-out.
+    open_all_night = replace(
+        employee,
+        datetime_availability=((shift.starts_at, late_close.ends_at),),
+    )
+    employees = [open_all_night if e.id == employee.id else e for e in scenario.employees]
 
-    updated = apply_callout(scenario.employees, employee.id, shift)
-    called_out = next(e for e in updated if e.id == employee.id)
+    called_out = next(
+        e for e in apply_callout(employees, employee.id, shift)
+        if e.id == employee.id
+    )
+
+    assert not _available(called_out, late_close)
+
+
+def test_apply_callout_shift_only_keeps_the_late_close():
+    scenario, shift, employee = _callout_case()
+    late_close = next(
+        s for s in scenario.shifts
+        if s.starts_at.date() == shift.starts_at.date() and s.starts_at.hour == 23
+    )
+    open_all_night = replace(
+        employee,
+        datetime_availability=((shift.starts_at, late_close.ends_at),),
+    )
+    employees = [open_all_night if e.id == employee.id else e for e in scenario.employees]
+
+    called_out = next(
+        e for e in apply_callout(employees, employee.id, shift, rest_of_day=False)
+        if e.id == employee.id
+    )
+
+    assert _available(called_out, late_close)
+
+
+def test_apply_callout_keeps_availability_outside_the_window():
+    scenario, shift, employee = _callout_case()
+    start, end = callout_window(shift)
+
+    called_out = next(
+        e for e in apply_callout(scenario.employees, employee.id, shift)
+        if e.id == employee.id
+    )
 
     for other in scenario.shifts:
-        if other.starts_at >= shift.ends_at or other.ends_at <= shift.starts_at:
+        if not _overlaps(other, start, end):
             assert _available(called_out, other) == _available(employee, other)
 
 
@@ -505,15 +590,16 @@ def test_apply_callout_leaves_other_employees_unchanged():
 
 def test_apply_callout_intervals_stay_valid():
     scenario, shift, employee = _callout_case()
+    start, end = callout_window(shift)
 
     called_out = next(
         e for e in apply_callout(scenario.employees, employee.id, shift)
         if e.id == employee.id
     )
 
-    for start, end in called_out.datetime_availability:
-        assert end > start
-        assert end <= shift.starts_at or start >= shift.ends_at
+    for interval_start, interval_end in called_out.datetime_availability:
+        assert interval_end > interval_start
+        assert interval_end <= start or interval_start >= end
 
 
 def test_apply_callout_rejects_unknown_employee():

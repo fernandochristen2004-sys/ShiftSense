@@ -549,16 +549,42 @@ def pick_callout(
     return Random(seed).choice(assigned)
 
 
+def callout_window(
+    shift: DateTimeShift,
+    rest_of_day: bool = True,
+) -> tuple[datetime, datetime]:
+    """Return the period a call-out makes the employee unavailable.
+
+    By default a call-out covers the rest of the day: from the shift's
+    start until 06:00 the next morning (or the shift's end, if later).
+    Someone who calls in sick for dinner usually can't work the late close
+    either. With `rest_of_day=False`, only the shift itself is blocked.
+    """
+    if not rest_of_day:
+        return shift.starts_at, shift.ends_at
+
+    next_morning = datetime.combine(
+        shift.starts_at.date() + timedelta(days=1),
+        time(6, 0),
+        tzinfo=shift.starts_at.tzinfo,
+    )
+    return shift.starts_at, max(shift.ends_at, next_morning)
+
+
 def apply_callout(
     employees: list[Employee] | tuple[Employee, ...],
     employee_id: int,
     shift: DateTimeShift,
+    rest_of_day: bool = True,
 ) -> list[Employee]:
-    """Return employees with `employee_id` made unavailable for `shift`.
+    """Return employees with `employee_id` made unavailable after a call-out.
 
-    Simulates a call-out. Availability intervals that overlap the shift are
-    cut around it, so the employee stays available at other times.
+    Simulates a call-out. By default the employee is unavailable for the
+    rest of the day (see `callout_window`). Availability intervals that
+    overlap the blocked period are cut around it, so the employee stays
+    available at other times.
     """
+    blocked_start, blocked_end = callout_window(shift, rest_of_day)
     updated: list[Employee] = []
     found = False
 
@@ -571,13 +597,13 @@ def apply_callout(
         kept: list[tuple[datetime, datetime]] = []
 
         for start, end in employee.datetime_availability:
-            if end <= shift.starts_at or start >= shift.ends_at:
+            if end <= blocked_start or start >= blocked_end:
                 kept.append((start, end))
                 continue
-            if start < shift.starts_at:
-                kept.append((start, shift.starts_at))
-            if shift.ends_at < end:
-                kept.append((shift.ends_at, end))
+            if start < blocked_start:
+                kept.append((start, blocked_start))
+            if blocked_end < end:
+                kept.append((blocked_end, end))
 
         updated.append(replace(employee, datetime_availability=tuple(kept)))
 
