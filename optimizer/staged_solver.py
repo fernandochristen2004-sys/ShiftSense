@@ -1,8 +1,29 @@
-
 from dataclasses import dataclass
 from time import monotonic
 
 from ortools.sat.python import cp_model
+
+
+def configure_solver(
+    solver: cp_model.CpSolver,
+    time_limit_seconds: float,
+    deterministic: bool = False,
+) -> None:
+    """Apply the time limit and, optionally, reproducible search settings.
+
+    CP-SAT normally searches with several threads in parallel. When several
+    schedules are equally good, which one is returned can then differ
+    between runs. Deterministic mode uses one thread and a fixed random seed,
+    so the same input gives the same schedule, at the cost of speed.
+
+    Results are only fully reproducible when every stage finishes within its
+    time limit; a stage stopped by the clock can stop at a different point.
+    """
+    solver.parameters.max_time_in_seconds = time_limit_seconds
+
+    if deterministic:
+        solver.parameters.num_workers = 1
+        solver.parameters.random_seed = 0
 
 
 @dataclass(frozen=True)
@@ -29,6 +50,7 @@ def solve_stages(
     tracked_variables: list,
     time_limit_seconds: float = 10.0,
     first_stage_fraction: float = 0.5,
+    deterministic: bool = False,
 ) -> StagedSolveResult:
     """
     Optimize objectives in priority order using one CP-SAT model.
@@ -95,7 +117,7 @@ def solve_stages(
                 )
 
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = stage_budget
+        configure_solver(solver, stage_budget, deterministic)
 
         status = solver.solve(model)
         last_status = solver.status_name(status)

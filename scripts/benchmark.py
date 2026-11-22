@@ -9,6 +9,7 @@ For each restaurant size and seed:
 Run from the project root:
     python -m scripts.benchmark
     python -m scripts.benchmark --sizes 25 40 --seeds 10
+    python -m scripts.benchmark --deterministic   (repeatable, slower)
 
 A repair can be INFEASIBLE when the call-out makes a hard minimum
 impossible (common in small, overloaded restaurants). That is reported,
@@ -44,7 +45,7 @@ def _timed(function, **kwargs):
     return result, time.perf_counter() - start
 
 
-def run_once(size: int, seed: int) -> dict:
+def run_once(size: int, seed: int, deterministic: bool = False) -> dict:
     scenario = generate_restaurant_scenario(size, seed=seed)
     shifts = list(scenario.shifts)
 
@@ -53,6 +54,7 @@ def run_once(size: int, seed: int) -> dict:
         employees=list(scenario.employees),
         shifts=shifts,
         policy=scenario.policy,
+        deterministic=deterministic,
     )
 
     row = {
@@ -86,6 +88,7 @@ def run_once(size: int, seed: int) -> dict:
         shifts=shifts,
         policy=scenario.policy,
         original_schedule=generated.assignments,
+        deterministic=deterministic,
     )
 
     row.update(
@@ -158,10 +161,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sizes", type=int, nargs="+", default=[18, 25, 40])
     parser.add_argument("--seeds", type=int, default=5, help="number of seeds per size")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="single-threaded, repeatable runs (slower; times are not comparable)",
+    )
     args = parser.parse_args(argv)
 
     rows = [
-        run_once(size, seed)
+        run_once(size, seed, args.deterministic)
         for size in args.sizes
         for seed in range(args.seeds)
     ]

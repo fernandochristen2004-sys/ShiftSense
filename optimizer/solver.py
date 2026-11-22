@@ -11,7 +11,7 @@ from optimizer.timeutils import (
 )
 from datetime import timezone, tzinfo
 from optimizer.lock_conflicts import find_lock_conflicts
-from optimizer.staged_solver import OptimizationStage, solve_stages
+from optimizer.staged_solver import OptimizationStage, configure_solver, solve_stages
 from optimizer.schedule_metrics import calculate_schedule_metrics
 from optimizer.coverage_metrics import calculate_coverage
 
@@ -55,6 +55,7 @@ def generate_schedule(
     outside_assignments: tuple[FixedAssignment, ...] = (),
     locked_assignments: dict[int, dict[str, list[int]]] | None = None,
     excluded_assignments: dict[int, list[int]] | None = None,
+    deterministic: bool = False,
 ):
 
 
@@ -503,6 +504,7 @@ def generate_schedule(
             stages=stages,
             tracked_variables=tracked_variables,
             time_limit_seconds=10.0,
+            deterministic=deterministic,
         )
 
         status_name = staged_result.status
@@ -513,7 +515,7 @@ def generate_schedule(
     else:
         # Feasibility-only mode: no optimization objective.
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 10.0
+        configure_solver(solver, 10.0, deterministic)
 
         status = solver.solve(model)
         status_name = solver.status_name(status)

@@ -12,9 +12,9 @@ boundaries of the current scheduling engine.
 - **Maximum hours** apply within the planning window. Outside (fixed)
   assignments are checked for overlap and rest, but do not count toward
   the employee's maximum hours.
-- **Units:** maximum hours are stored in whole hours while targets are
-  stored in minutes. Comparisons convert to minutes; a later cleanup may
-  store both in minutes.
+- **Units:** maximum hours and minimum rest are stored in whole hours, while
+  targets are stored in minutes. Comparisons convert to minutes; a later
+  cleanup may store everything in minutes.
 
 ## Optimization results
 
@@ -23,6 +23,10 @@ boundaries of the current scheduling engine.
 - **FEASIBLE results are not proven optimal.** If a stage hits its time
   budget, the last valid schedule is kept. Shortages are only proven
   unavoidable when the coverage stage is OPTIMAL.
+- **Results can vary between runs by default.** CP-SAT searches in parallel, so when
+  several schedules are equally good, which one is returned can differ. Statuses and
+  objective values are stable. Pass `deterministic=True` (used by the demo) for
+  repeatable results; it is slower, especially for larger restaurants.
 
 ## Explanations
 
@@ -41,3 +45,6 @@ boundaries of the current scheduling engine.
 - **Small restaurants** (under about 18 staff) are often overloaded by the
   generated shift pattern and may be infeasible.
 - **Benchmarks** were measured on a single laptop and depend on hardware.
+- **Simulated call-outs** block the employee from the start of the shift until
+  06:00 the next morning. Some call-outs therefore cannot be covered, and repair
+  returns INFEASIBLE.

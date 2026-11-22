@@ -1,4 +1,3 @@
-
 """Public entry points for ShiftSense scheduling."""
 
 from dataclasses import replace
@@ -24,6 +23,7 @@ def _run(
     locked_assignments: dict[int, dict[str, list[int]]] | None = None,
     excluded_assignments: dict[int, list[int]] | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
+    deterministic: bool = False,
 ) -> ScheduleResult:
     """Run the existing solver and independently validate its output."""
 
@@ -36,6 +36,7 @@ def _run(
         outside_assignments=outside_assignments,
         locked_assignments=locked_assignments,
         excluded_assignments=excluded_assignments,
+        deterministic=deterministic,
     )
 
     # No schedule exists to validate for INFEASIBLE/UNKNOWN results.
@@ -68,8 +69,12 @@ def generate(
     locked_assignments: dict[int, dict[str, list[int]]] | None = None,
     excluded_assignments: dict[int, list[int]] | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
+    deterministic: bool = False,
 ) -> ScheduleResult:
-    """Generate and validate a new restaurant schedule."""
+    """Generate and validate a new restaurant schedule.
+
+    Set `deterministic=True` for the same schedule on every run (slower).
+    """
 
     return _run(
         employees=employees,
@@ -79,6 +84,7 @@ def generate(
         locked_assignments=locked_assignments,
         excluded_assignments=excluded_assignments,
         scheduling_timezone=scheduling_timezone,
+        deterministic=deterministic,
     )
 
 
@@ -91,8 +97,12 @@ def repair(
     locked_assignments: dict[int, dict[str, list[int]]] | None = None,
     excluded_assignments: dict[int, list[int]] | None = None,
     scheduling_timezone: tzinfo = timezone.utc,
+    deterministic: bool = False,
 ) -> ScheduleResult:
-    """Repair and independently validate an existing schedule."""
+    """Repair and independently validate an existing schedule.
+
+    Set `deterministic=True` for the same repair on every run (slower).
+    """
 
     return _run(
         employees=employees,
@@ -103,4 +113,5 @@ def repair(
         locked_assignments=locked_assignments,
         excluded_assignments=excluded_assignments,
         scheduling_timezone=scheduling_timezone,
+        deterministic=deterministic,
     )
