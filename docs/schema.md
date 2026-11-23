@@ -251,6 +251,7 @@ Check: `kind = 'must_not_work' or skill_id is not null`.
 | restaurant_id | bigint not null | |
 | employee_id | bigint | FK `(restaurant_id, employee_id)` → employees |
 | shift_id | bigint | FK `(restaurant_id, shift_id)` → shifts |
+| rest_of_day | boolean not null | Default true: also off until 06:00 the next morning (restaurant time) |
 | reported_at | timestamptz not null | |
 | note | text null | |
 
