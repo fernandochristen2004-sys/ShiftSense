@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from api.examples import scenario_request
 from api.main import app
 from optimizer.synthetic_data import generate_restaurant_scenario
 
@@ -47,49 +48,6 @@ def _small_request(**overrides) -> dict:
     return request
 
 
-def _scenario_request(scenario, deterministic: bool = False) -> dict:
-    """Convert a synthetic restaurant into the API's JSON format."""
-    policy = scenario.policy
-    return {
-        "employees": [
-            {
-                "id": e.id,
-                "name": e.name,
-                "skills": sorted(e.skills),
-                "max_hours": e.max_hours,
-                "target_minutes": e.target_minutes,
-                "datetime_availability": [
-                    {"starts_at": start.isoformat(), "ends_at": end.isoformat()}
-                    for start, end in e.datetime_availability
-                ],
-            }
-            for e in scenario.employees
-        ],
-        "shifts": [
-            {
-                "id": s.id,
-                "starts_at": s.starts_at.isoformat(),
-                "ends_at": s.ends_at.isoformat(),
-                "requirements": [
-                    {"skill": r.skill, "count": r.count, "min_count": r.min_count}
-                    for r in s.requirements
-                ],
-            }
-            for s in scenario.shifts
-        ],
-        "policy": {
-            "minimum_rest_hours": policy.minimum_rest_hours,
-            "enforce_minimum_rest": policy.enforce_minimum_rest,
-            "fairness_enabled": policy.fairness_enabled,
-            "allow_split_shifts": policy.allow_split_shifts,
-            "split_shift_min_break_minutes": policy.split_shift_min_break_minutes,
-            "max_split_span_minutes": policy.max_split_span_minutes,
-            "allow_partial_coverage": policy.allow_partial_coverage,
-        },
-        "deterministic": deterministic,
-    }
-
-
 # Successful generation
 
 def test_small_schedule_is_generated():
@@ -110,7 +68,7 @@ def test_small_schedule_is_generated():
 def test_realistic_restaurant_is_generated():
     scenario = generate_restaurant_scenario(25, seed=42)
 
-    response = client.post(URL, json=_scenario_request(scenario))
+    response = client.post(URL, json=scenario_request(scenario))
 
     assert response.status_code == 200
     body = response.json()
@@ -127,7 +85,7 @@ def test_realistic_restaurant_is_generated():
 
 def test_deterministic_requests_return_the_same_schedule():
     scenario = generate_restaurant_scenario(25, seed=42)
-    request = _scenario_request(scenario, deterministic=True)
+    request = scenario_request(scenario, deterministic=True)
 
     first = client.post(URL, json=request).json()
     second = client.post(URL, json=request).json()

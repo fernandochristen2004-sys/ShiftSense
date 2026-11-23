@@ -3,8 +3,18 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from api.convert import to_engine_inputs, to_schedule_response
-from api.schemas import GenerateRequest, ScheduleResponse
+from api.convert import (
+    to_engine_inputs,
+    to_repair_inputs,
+    to_repair_response,
+    to_schedule_response,
+)
+from api.schemas import (
+    GenerateRequest,
+    RepairRequest,
+    RepairResponse,
+    ScheduleResponse,
+)
 from optimizer import engine
 
 app = FastAPI(title="ShiftSense API", version="0.1.0")
@@ -36,3 +46,20 @@ def generate_schedule(request: GenerateRequest) -> ScheduleResponse:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     return to_schedule_response(result)
+
+
+@app.post("/schedules/repair", response_model=RepairResponse)
+def repair_schedule(request: RepairRequest) -> RepairResponse:
+    """Repair a published schedule after one or more call-outs.
+
+    Coverage comes first, then the fewest changes, then fairness. The
+    response lists every change. If a call-out can't be covered without
+    breaking a hard minimum, the status is INFEASIBLE (200, no assignments).
+    """
+    try:
+        inputs = to_repair_inputs(request)
+        result = engine.repair(**inputs)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return to_repair_response(result, inputs["original_schedule"])

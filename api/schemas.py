@@ -120,3 +120,36 @@ class ScheduleResponse(ApiModel):
     stage_statuses: dict[str, str]
     schedule_metrics: dict[str, int | float]
     assignment_changes: int | None = Field(description="Repairs only")
+
+
+# Repair
+
+class CalloutIn(ApiModel):
+    """An employee who can't work a shift they were scheduled for."""
+
+    shift_id: int = Field(gt=0)
+    employee_id: int = Field(gt=0)
+    rest_of_day: bool = Field(
+        default=True,
+        description="Also keep them off any shift until 06:00 the next morning (restaurant time)",
+    )
+
+
+class RepairRequest(GenerateRequest):
+    original_assignments: list[AssignmentRef] = Field(
+        description="The published schedule, in the format /schedules/generate returns",
+    )
+    callouts: list[CalloutIn] = Field(min_length=1)
+
+
+class ChangeOut(ApiModel):
+    """One employee's change on one shift. A null role means not working it."""
+
+    shift_id: int
+    employee_id: int
+    before_role: str | None
+    after_role: str | None
+
+
+class RepairResponse(ScheduleResponse):
+    changes: list[ChangeOut] | None = Field(description="null when no repair was found")
