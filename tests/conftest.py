@@ -14,6 +14,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
+from db.session import CONNECT_ARGS
 
 TEST_DATABASE_URL = os.environ.get(
     "SHIFTSENSE_TEST_DATABASE_URL",
@@ -25,7 +26,7 @@ ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 @pytest.fixture(scope="session")
 def db_engine():
     """A fresh test database, built by running every migration."""
-    engine = create_engine(TEST_DATABASE_URL)
+    engine = create_engine(TEST_DATABASE_URL, connect_args=CONNECT_ARGS)
     try:
         with engine.connect() as connection:
             connection.execute(text("select 1"))

@@ -18,6 +18,11 @@ def database_url() -> str:
     return os.environ.get("SHIFTSENSE_DATABASE_URL", LOCAL_DATABASE_URL)
 
 
+# Every connection works in UTC, so times come back the same way whatever the
+# database server's own timezone setting is. Local times are worked out from
+# the restaurant's timezone in Python, never by the database.
+CONNECT_ARGS = {"options": "-c timezone=UTC"}
+
 # Creating the engine does not connect yet; connections open when first used.
-engine = create_engine(database_url())
+engine = create_engine(database_url(), connect_args=CONNECT_ARGS)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
