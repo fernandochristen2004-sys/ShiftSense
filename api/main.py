@@ -15,9 +15,11 @@ from api.schemas import (
     RepairResponse,
     ScheduleResponse,
 )
+from api.restaurants import router as restaurants_router
 from optimizer import engine
 
 app = FastAPI(title="ShiftSense API", version="0.1.0")
+app.include_router(restaurants_router)
 
 
 class HealthResponse(BaseModel):
@@ -31,6 +33,9 @@ def health() -> HealthResponse:
     """Report that the API is running."""
     return HealthResponse(status="ok")
 
+
+# Stateless endpoints: everything is sent in the request and nothing is saved.
+# Useful for trying the engine. The stored-data workflow is in api/restaurants.py.
 
 @app.post("/schedules/generate", response_model=ScheduleResponse)
 def generate_schedule(request: GenerateRequest) -> ScheduleResponse:
