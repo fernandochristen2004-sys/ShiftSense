@@ -1,6 +1,9 @@
 """ShiftSense web API."""
 
+import os
+
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from api.convert import (
@@ -19,6 +22,19 @@ from api.restaurants import router as restaurants_router
 from optimizer import engine
 
 app = FastAPI(title="ShiftSense API", version="0.1.0")
+
+# Browsers block a page on one address (the dashboard, port 3000) from calling
+# an API on another (port 8000) unless the API allows it. Set
+# SHIFTSENSE_CORS_ORIGINS to a comma-separated list to allow other addresses.
+CORS_ORIGINS = os.environ.get(
+    "SHIFTSENSE_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+).split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in CORS_ORIGINS if origin.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 app.include_router(restaurants_router)
 
 

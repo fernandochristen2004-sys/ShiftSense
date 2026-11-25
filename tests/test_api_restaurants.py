@@ -170,6 +170,16 @@ def test_schedules_are_private_to_their_restaurant(client, db, demo):
     assert response.status_code == 404
 
 
+def test_published_schedule_of_a_week(client, demo):
+    assert client.get(_base(demo) + WEEK + "/published").status_code == 404
+
+    published = _publish(client, demo, _draft(client, demo))
+
+    response = client.get(_base(demo) + WEEK + "/published")
+    assert response.status_code == 200
+    assert response.json() == published
+
+
 # Publishing
 
 def test_publishing_a_draft(client, demo):
@@ -336,3 +346,68 @@ def test_outdated_repair_is_refused(client, db, demo):
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "stale"
+
+
+# Restaurant and week data
+
+def test_listing_restaurants(client, demo):
+    response = client.get("/restaurants")
+    assert response.status_code == 200
+    assert {"id": demo.restaurant_id, "name": "Demo Bistro", "timezone": "UTC"} in response.json()
+
+
+def test_getting_a_restaurant(client, demo):
+    response = client.get(_base(demo))
+    assert response.status_code == 200
+    assert response.json() == {"id": demo.restaurant_id, "name": "Demo Bistro", "timezone": "UTC"}
+
+
+def test_unknown_restaurant_details_are_404(client):
+    assert client.get("/restaurants/999999").status_code == 404
+
+
+def test_listing_shifts(client, demo):
+    response = client.get(_base(demo) + WEEK + "/shifts")
+
+    assert response.status_code == 200
+    shifts = response.json()
+    assert {s["id"] for s in shifts} == set(demo.shift_ids.values())
+    assert shifts == sorted(shifts, key=lambda s: s["starts_at"])
+    first = shifts[0]
+    assert first["local_date"] == "2026-11-23"
+    assert first["local_start"] == "11:00:00"
+    assert first["requirements"]
+    assert all(r["min_count"] <= r["count"] for s in shifts for r in s["requirements"])
+
+
+def test_late_shift_ends_after_midnight(client, demo):
+    shifts = client.get(_base(demo) + WEEK + "/shifts").json()
+    late = [s for s in shifts if s["local_start"] == "23:00:00"]
+    assert late, "the demo week has Friday and Saturday late closes"
+    assert all(s["local_end"] < s["local_start"] for s in late)
+
+
+def test_shift_times_use_the_restaurant_timezone(client, db, demo):
+    db.get(models.Restaurant, demo.restaurant_id).timezone = "Asia/Colombo"
+    db.flush()
+
+    # Monday 11:00 UTC is 16:30 in Colombo. Monday 00:00 Colombo is still in the week.
+    shifts = client.get(_base(demo) + WEEK + "/shifts").json()
+
+    assert shifts[0]["local_start"] == "16:30:00"
+
+
+def test_dashboard_origin_is_allowed(client):
+    response = client.options(
+        "/health",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_other_origins_are_not_allowed(client):
+    response = client.get("/health", headers={"Origin": "http://evil.example"})
+    assert "access-control-allow-origin" not in response.headers

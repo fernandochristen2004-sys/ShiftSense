@@ -30,8 +30,11 @@ from api.stored_schemas import (
     DraftRequest,
     DraftResponse,
     PublishRequest,
+    RequirementOut,
+    RestaurantOut,
     ScheduleDetail,
     ScheduleSummary,
+    ShiftOut,
     StoredAssignmentOut,
     StoredCalloutIn,
 )
@@ -41,6 +44,7 @@ from services.scheduling import (
     DraftOutcome,
     ShortagesNotAcceptedError,
     StaleScheduleError,
+    current_published,
     generate_draft,
     publish_schedule,
     record_absence,
@@ -48,7 +52,7 @@ from services.scheduling import (
 )
 from services.weeks import week_bounds
 
-router = APIRouter(prefix="/restaurants/{restaurant_id}", tags=["restaurants"])
+router = APIRouter(prefix="/restaurants", tags=["restaurants"])
 
 
 # Errors
@@ -172,9 +176,84 @@ def _schedule(session: Session, restaurant_id: int, schedule_id: int) -> db.Sche
     return schedule
 
 
+# Restaurants and their weeks
+
+def _restaurant_out(restaurant: db.Restaurant) -> RestaurantOut:
+    return RestaurantOut(id=restaurant.id, name=restaurant.name, timezone=restaurant.timezone)
+
+
+@router.get("", response_model=list[RestaurantOut])
+def list_restaurants(session: Session = Depends(get_session)) -> list[RestaurantOut]:
+    """Every restaurant, oldest first."""
+    restaurants = session.scalars(select(db.Restaurant).order_by(db.Restaurant.id)).all()
+    return [_restaurant_out(restaurant) for restaurant in restaurants]
+
+
+@router.get("/{restaurant_id}", response_model=RestaurantOut)
+def get_restaurant(
+    restaurant_id: int,
+    session: Session = Depends(get_session),
+) -> RestaurantOut:
+    with _service_errors():
+        return _restaurant_out(load_restaurant(session, restaurant_id))
+
+
+@router.get("/{restaurant_id}/weeks/{week_start}/shifts", response_model=list[ShiftOut])
+def list_shifts(
+    restaurant_id: int,
+    week_start: date,
+    session: Session = Depends(get_session),
+) -> list[ShiftOut]:
+    """Active shifts starting in the week, in order, with local times and roles."""
+    with _service_errors():
+        restaurant = load_restaurant(session, restaurant_id)
+        period_start, period_end = week_bounds(week_start, ZoneInfo(restaurant.timezone))
+    local = ZoneInfo(restaurant.timezone)
+
+    shifts = session.scalars(
+        select(db.Shift)
+        .where(
+            db.Shift.restaurant_id == restaurant_id,
+            db.Shift.status == "active",
+            db.Shift.starts_at >= period_start,
+            db.Shift.starts_at < period_end,
+        )
+        .order_by(db.Shift.starts_at, db.Shift.id)
+    ).all()
+
+    requirements: dict[int, list[RequirementOut]] = {shift.id: [] for shift in shifts}
+    for shift_id, role, count, min_count in session.execute(
+        select(
+            db.ShiftRequirement.shift_id,
+            db.Skill.name,
+            db.ShiftRequirement.count,
+            db.ShiftRequirement.min_count,
+        )
+        .join(db.Skill, db.Skill.id == db.ShiftRequirement.skill_id)
+        .where(db.ShiftRequirement.shift_id.in_(list(requirements)))
+        .order_by(db.ShiftRequirement.shift_id, db.Skill.name)
+    ):
+        requirements[shift_id].append(RequirementOut(role=role, count=count, min_count=min_count))
+
+    result = []
+    for shift in shifts:
+        starts, ends = shift.starts_at.astimezone(local), shift.ends_at.astimezone(local)
+        result.append(ShiftOut(
+            id=shift.id,
+            label=shift.label,
+            starts_at=shift.starts_at,
+            ends_at=shift.ends_at,
+            local_date=starts.date(),
+            local_start=starts.time(),
+            local_end=ends.time(),
+            requirements=requirements[shift.id],
+        ))
+    return result
+
+
 # Schedules
 
-@router.post("/weeks/{week_start}/drafts", response_model=DraftResponse)
+@router.post("/{restaurant_id}/weeks/{week_start}/drafts", response_model=DraftResponse)
 def create_draft(
     restaurant_id: int,
     week_start: date,
@@ -193,7 +272,7 @@ def create_draft(
     return response
 
 
-@router.get("/weeks/{week_start}/schedules", response_model=list[ScheduleSummary])
+@router.get("/{restaurant_id}/weeks/{week_start}/schedules", response_model=list[ScheduleSummary])
 def list_schedules(
     restaurant_id: int,
     week_start: date,
@@ -214,7 +293,22 @@ def list_schedules(
     return [ScheduleSummary(**_summary_fields(schedule)) for schedule in schedules]
 
 
-@router.get("/schedules/{schedule_id}", response_model=ScheduleDetail)
+@router.get("/{restaurant_id}/weeks/{week_start}/published", response_model=ScheduleDetail)
+def get_published(
+    restaurant_id: int,
+    week_start: date,
+    session: Session = Depends(get_session),
+) -> ScheduleDetail:
+    """The week's live schedule. 404 if nothing is published yet."""
+    with _service_errors():
+        period_start, _ = _restaurant_week(session, restaurant_id, week_start)
+        published = current_published(session, restaurant_id, period_start)
+        if published is None:
+            raise LookupError("Nothing is published for that week yet.")
+    return _detail(session, published)
+
+
+@router.get("/{restaurant_id}/schedules/{schedule_id}", response_model=ScheduleDetail)
 def get_schedule(
     restaurant_id: int,
     schedule_id: int,
@@ -226,7 +320,7 @@ def get_schedule(
     return _detail(session, schedule)
 
 
-@router.post("/schedules/{schedule_id}/publish", response_model=ScheduleDetail)
+@router.post("/{restaurant_id}/schedules/{schedule_id}/publish", response_model=ScheduleDetail)
 def publish(
     restaurant_id: int,
     schedule_id: int,
@@ -249,7 +343,7 @@ def publish(
 # Call-outs and repairs
 
 @router.post(
-    "/callouts", response_model=CalloutOut, status_code=status.HTTP_201_CREATED
+    "/{restaurant_id}/callouts", response_model=CalloutOut, status_code=status.HTTP_201_CREATED
 )
 def create_callout(
     restaurant_id: int,
@@ -274,7 +368,7 @@ def create_callout(
     return _callout_out(absence)
 
 
-@router.get("/weeks/{week_start}/callouts", response_model=list[CalloutOut])
+@router.get("/{restaurant_id}/weeks/{week_start}/callouts", response_model=list[CalloutOut])
 def list_callouts(
     restaurant_id: int,
     week_start: date,
@@ -297,7 +391,7 @@ def list_callouts(
     return [_callout_out(absence) for absence in absences]
 
 
-@router.post("/weeks/{week_start}/repair", response_model=DraftResponse)
+@router.post("/{restaurant_id}/weeks/{week_start}/repair", response_model=DraftResponse)
 def repair_week(
     restaurant_id: int,
     week_start: date,

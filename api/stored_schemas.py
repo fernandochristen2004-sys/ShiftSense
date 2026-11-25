@@ -1,6 +1,6 @@
 """JSON models for the endpoints that work with stored restaurant data."""
 
-from datetime import datetime
+from datetime import date, datetime, time
 
 from pydantic import AwareDatetime, Field
 
@@ -82,3 +82,28 @@ class CalloutOut(ApiModel):
     rest_of_day: bool
     note: str | None
     reported_at: datetime
+
+
+# Restaurant and week data, for the dashboard
+
+class RestaurantOut(ApiModel):
+    id: int
+    name: str
+    timezone: str = Field(description="IANA name; local times below use it")
+
+
+class RequirementOut(ApiModel):
+    role: str
+    count: int = Field(description="Target number of people")
+    min_count: int = Field(description="Fewest people the shift can run with")
+
+
+class ShiftOut(ApiModel):
+    id: int
+    label: str | None
+    starts_at: AwareDatetime
+    ends_at: AwareDatetime
+    local_date: date = Field(description="The day the shift starts, restaurant time")
+    local_start: time = Field(description="Restaurant time")
+    local_end: time = Field(description="Restaurant time; earlier than local_start if it ends after midnight")
+    requirements: list[RequirementOut]
