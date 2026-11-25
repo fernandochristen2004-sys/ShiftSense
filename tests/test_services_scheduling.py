@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from db import models
 from optimizer import engine
+from optimizer.demo import demo_name
 from optimizer.models import ScheduleResult
 from optimizer.synthetic_data import generate_restaurant_scenario
 from services.demo import seed_demo_restaurant
@@ -80,7 +81,7 @@ def test_loaded_week_matches_the_demo_restaurant(db):
     assert len(inputs.employees) == 25
     assert len(inputs.shifts) == 16
     assert inputs.policy == scenario.policy
-    assert {e.name for e in inputs.employees} == {e.name for e in scenario.employees}
+    assert {e.name for e in inputs.employees} == {demo_name(e.id) for e in scenario.employees}
     assert sum(len(s.requirements) for s in inputs.shifts) == sum(
         len(s.requirements) for s in scenario.shifts
     )

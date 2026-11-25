@@ -9,8 +9,13 @@ checked by an independent validator.
 
 Built for single-location restaurants with about 10–40 staff.
 
-> **Status:** the scheduling engine is complete and tested. The FastAPI backend,
-> PostgreSQL database and Next.js dashboard are in development.
+> **Status:** the engine, FastAPI backend, PostgreSQL database and the core dashboard
+> flow (view the week, record a call-out, approve the repair) work end to end.
+> Staff and shift management, more dashboard features and deployment are in progress.
+
+![ShiftSense dashboard: Sara calls out of Monday lunch and the engine covers it with one change](docs/images/dashboard-repair.png)
+
+*A server calls out. ShiftSense re-solves the week, keeps every rule, and proposes the smallest fix (here, 2 changes), highlighted for the manager to approve.*
 
 ## What it does
 

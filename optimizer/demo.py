@@ -28,7 +28,8 @@ DEMO_NAMES = (
 )
 
 
-def _name(employee_id: int) -> str:
+def demo_name(employee_id: int) -> str:
+    """A friendly first name for a synthetic employee id (1 = Asha, 2 = Ben ...)."""
     if employee_id <= len(DEMO_NAMES):
         return DEMO_NAMES[employee_id - 1]
     return f"Employee {employee_id}"
@@ -50,7 +51,7 @@ def print_schedule(shifts, assignments) -> None:
         print(f"\n{_shift_label(shift)}")
         for requirement in shift.requirements:
             ids = assignments.get(shift.id, {}).get(requirement.skill, [])
-            names = ", ".join(_name(i) for i in sorted(ids)) or "nobody"
+            names = ", ".join(demo_name(i) for i in sorted(ids)) or "nobody"
             short = requirement.count - len(ids)
             note = f"   ({short} short)" if short > 0 else ""
             print(f"  {requirement.skill:<10} {names}{note}")
@@ -94,7 +95,7 @@ def print_changes(original, repaired, shifts) -> None:
             if old_role == new_role:
                 continue
 
-            who = _name(employee_id)
+            who = demo_name(employee_id)
             where = _shift_label(shift)
             if new_role is None:
                 removed.append(f"  - {who} is taken off {where} ({old_role})")
@@ -176,7 +177,7 @@ def main(argv: list[str] | None = None) -> None:
 
     role = _role_of(result.assignments, shift_id, employee_id)
     print("\n" + "=" * 60)
-    print(f"2. Call-out: {_name(employee_id)} ({role}) calls in sick for "
+    print(f"2. Call-out: {demo_name(employee_id)} ({role}) calls in sick for "
           f"{_shift_label(shift)}")
     print("   and can't work again until 06:00 the next morning.")
     if len(attempts) > 1:

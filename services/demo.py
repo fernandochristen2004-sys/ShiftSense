@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from db import models as db
+from optimizer.demo import demo_name
 from optimizer.synthetic_data import generate_restaurant_scenario
 
 DEMO_TIMEZONE = "UTC"
@@ -66,7 +67,7 @@ def seed_demo_restaurant(
     for synthetic in sorted(scenario.employees, key=lambda e: e.id):
         employee = db.Employee(
             restaurant_id=restaurant.id,
-            display_name=synthetic.name,
+            display_name=demo_name(synthetic.id),
             max_minutes=synthetic.max_hours * 60,
             target_minutes=synthetic.target_minutes,
         )

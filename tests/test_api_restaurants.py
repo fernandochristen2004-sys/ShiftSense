@@ -411,3 +411,9 @@ def test_dashboard_origin_is_allowed(client):
 def test_other_origins_are_not_allowed(client):
     response = client.get("/health", headers={"Origin": "http://evil.example"})
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_demo_staff_have_friendly_names(client, demo):
+    names = {a["employee_name"] for a in _draft(client, demo)["assignments"]}
+    assert "Asha" in names or "Ben" in names
+    assert not any(name.startswith("Employee ") for name in names)
