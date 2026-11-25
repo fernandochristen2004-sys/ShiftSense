@@ -2,19 +2,38 @@
 
 import { useEffect, useState } from "react";
 
-import { api, ApiError, type Restaurant, type Schedule, type Shift } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  type Assignment,
+  type Restaurant,
+  type Schedule,
+  type Shift,
+} from "@/lib/api";
 
 // The demo restaurant's week. Later this will default to the current week.
 const DEMO_WEEK = "2026-11-23";
 
 type WeekData = { shifts: Shift[]; schedule: Schedule | null };
 
+/** Someone the manager clicked, before confirming the call-out. */
+type Selection = { assignment: Assignment; shift: Shift };
+
+/** A repair waiting for the manager's approval. */
+type Proposal = { draft: Schedule; calledOut: Selection };
+
 export function Dashboard() {
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [restaurantId, setRestaurantId] = useState<number | null>(null);
   const [week, setWeek] = useState(DEMO_WEEK);
   const [data, setData] = useState<WeekData | null>(null);
+  const [reloads, setReloads] = useState(0);
+
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Load the restaurant list once and pick the newest (the latest demo seed).
   useEffect(() => {
@@ -27,7 +46,7 @@ export function Dashboard() {
       .catch((e: ApiError) => setError(e.message));
   }, []);
 
-  // Load the week's shifts and published schedule whenever the selection changes.
+  // Load the week's shifts and published schedule when the selection changes.
   useEffect(() => {
     if (restaurantId === null) return;
     let cancelled = false;
@@ -40,17 +59,74 @@ export function Dashboard() {
       }),
     ])
       .then(([shifts, schedule]) => {
-        if (!cancelled) {
-          setData({ shifts, schedule });
-          setError(null);
-        }
+        if (!cancelled) setData({ shifts, schedule });
       })
       .catch((e: ApiError) => !cancelled && setError(e.message));
 
     return () => {
       cancelled = true;
     };
-  }, [restaurantId, week]);
+  }, [restaurantId, week, reloads]);
+
+  function changeView(update: () => void) {
+    update();
+    setSelection(null);
+    setProposal(null);
+    setError(null);
+    setNotice(null);
+  }
+
+  /** Record the call-out, then ask the engine for the smallest repair. */
+  async function callOut(restOfDay: boolean) {
+    if (!selection || restaurantId === null) return;
+    setBusy("Finding cover…");
+    setError(null);
+    setNotice(null);
+    try {
+      await api.callOut(restaurantId, {
+        shift_id: selection.shift.id,
+        employee_id: selection.assignment.employee_id,
+        rest_of_day: restOfDay,
+      });
+      const result = await api.repair(restaurantId, week);
+      if (result.schedule === null) {
+        setError(
+          `No repair possible (${result.status}). The call-out is recorded, but ` +
+            "the shift can't be covered without breaking a rule.",
+        );
+      } else {
+        setProposal({ draft: result.schedule, calledOut: selection });
+      }
+      setSelection(null);
+    } catch (e) {
+      setError((e as ApiError).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function approve(acceptShortages: boolean) {
+    if (!proposal || restaurantId === null) return;
+    setBusy("Publishing…");
+    setError(null);
+    try {
+      const published = await api.publish(restaurantId, proposal.draft, acceptShortages);
+      setProposal(null);
+      setNotice(`Revision ${published.revision_number} is now live.`);
+      setReloads((n) => n + 1);
+    } catch (e) {
+      const err = e as ApiError;
+      if (err.code === "stale") {
+        setError(`${err.message} The page has been reloaded.`);
+        setProposal(null);
+        setReloads((n) => n + 1);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
 
   const restaurant = restaurants.find((r) => r.id === restaurantId);
 
@@ -68,7 +144,7 @@ export function Dashboard() {
           <select
             className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm"
             value={restaurantId ?? ""}
-            onChange={(e) => setRestaurantId(Number(e.target.value))}
+            onChange={(e) => changeView(() => setRestaurantId(Number(e.target.value)))}
             aria-label="Restaurant"
           >
             {restaurants.map((r) => (
@@ -81,7 +157,7 @@ export function Dashboard() {
           <div className="flex items-center rounded-md border border-slate-300 bg-white text-sm">
             <button
               className="px-3 py-1.5 hover:bg-slate-100"
-              onClick={() => setWeek(addDays(week, -7))}
+              onClick={() => changeView(() => setWeek(addDays(week, -7)))}
               aria-label="Previous week"
             >
               ‹
@@ -89,7 +165,7 @@ export function Dashboard() {
             <span className="px-2">Week of {formatDate(week)}</span>
             <button
               className="px-3 py-1.5 hover:bg-slate-100"
-              onClick={() => setWeek(addDays(week, 7))}
+              onClick={() => changeView(() => setWeek(addDays(week, 7)))}
               aria-label="Next week"
             >
               ›
@@ -98,46 +174,210 @@ export function Dashboard() {
         </div>
       </header>
 
-      {error && (
-        <p className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          {error}
-        </p>
+      {error && <Banner tone="red">{error}</Banner>}
+      {notice && <Banner tone="green">{notice}</Banner>}
+      {busy && <Banner tone="slate">{busy}</Banner>}
+
+      {selection && !busy && (
+        <CalloutPanel
+          selection={selection}
+          onConfirm={callOut}
+          onCancel={() => setSelection(null)}
+        />
       )}
 
-      {data && <WeekView week={week} shifts={data.shifts} schedule={data.schedule} />}
+      {proposal && !busy && data?.schedule && (
+        <ProposalPanel
+          proposal={proposal}
+          published={data.schedule}
+          shifts={data.shifts}
+          onApprove={approve}
+          onDiscard={() => setProposal(null)}
+        />
+      )}
+
+      {data && (
+        <WeekView
+          week={week}
+          shifts={data.shifts}
+          published={data.schedule}
+          proposal={proposal}
+          selection={selection}
+          onSelect={busy || proposal ? undefined : setSelection}
+        />
+      )}
     </main>
   );
 }
 
+// Panels
+
+function CalloutPanel({
+  selection,
+  onConfirm,
+  onCancel,
+}: {
+  selection: Selection;
+  onConfirm: (restOfDay: boolean) => void;
+  onCancel: () => void;
+}) {
+  const [restOfDay, setRestOfDay] = useState(true);
+  const { assignment, shift } = selection;
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+      <p className="grow">
+        <strong>{assignment.employee_name}</strong> can&apos;t work{" "}
+        <strong>{shiftName(shift)}</strong> ({assignment.role})?
+      </p>
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={restOfDay}
+          onChange={(e) => setRestOfDay(e.target.checked)}
+        />
+        Off for the rest of the day
+      </label>
+      <button
+        className="rounded-md bg-amber-600 px-3 py-1.5 font-medium text-white hover:bg-amber-700"
+        onClick={() => onConfirm(restOfDay)}
+      >
+        Call out &amp; find cover
+      </button>
+      <button className="px-2 py-1.5 text-slate-600 hover:underline" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function ProposalPanel({
+  proposal,
+  published,
+  shifts,
+  onApprove,
+  onDiscard,
+}: {
+  proposal: Proposal;
+  published: Schedule;
+  shifts: Shift[];
+  onApprove: (acceptShortages: boolean) => void;
+  onDiscard: () => void;
+}) {
+  const { draft, calledOut } = proposal;
+  const missing = totalMissing(draft);
+  const [accepted, setAccepted] = useState(false);
+  const names = nameLookup(published, draft);
+  const changes = draft.changes ?? [];
+
+  return (
+    <div className="mb-4 rounded-lg border border-sky-300 bg-sky-50 px-4 py-3 text-sm">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <strong>Repair proposal · revision {draft.revision_number}</strong>
+        <Badge tone="slate">
+          {changes.length} change{changes.length === 1 ? "" : "s"}
+        </Badge>
+        {missing > 0 ? (
+          <Badge tone="amber">{missing} position(s) short</Badge>
+        ) : (
+          <Badge tone="green">Fully covered</Badge>
+        )}
+        <span className="text-slate-500">
+          after {calledOut.assignment.employee_name} called out
+        </span>
+      </div>
+
+      <ul className="mb-3 space-y-0.5">
+        {changes.map((change) => {
+          const shift = shifts.find((s) => s.id === change.shift_id);
+          const name = names.get(change.employee_id) ?? `#${change.employee_id}`;
+          const where = shift ? shiftName(shift) : `shift ${change.shift_id}`;
+          return (
+            <li key={`${change.shift_id}-${change.employee_id}`}>
+              {change.after_role === null ? (
+                <span className="text-red-700">
+                  − {name} off {where} ({change.before_role})
+                </span>
+              ) : change.before_role === null ? (
+                <span className="text-emerald-700">
+                  + {name} on {where} ({change.after_role})
+                </span>
+              ) : (
+                <span className="text-sky-800">
+                  ~ {name} on {where}: {change.before_role} → {change.after_role}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="flex flex-wrap items-center gap-4">
+        {missing > 0 && (
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={accepted}
+              onChange={(e) => setAccepted(e.target.checked)}
+            />
+            Publish with {missing} position(s) short
+          </label>
+        )}
+        <button
+          className="rounded-md bg-emerald-600 px-3 py-1.5 font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          disabled={missing > 0 && !accepted}
+          onClick={() => onApprove(missing > 0)}
+        >
+          Approve &amp; publish
+        </button>
+        <button className="px-2 py-1.5 text-slate-600 hover:underline" onClick={onDiscard}>
+          Discard
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// The grid
+
 function WeekView({
   week,
   shifts,
-  schedule,
+  published,
+  proposal,
+  selection,
+  onSelect,
 }: {
   week: string;
   shifts: Shift[];
-  schedule: Schedule | null;
+  published: Schedule | null;
+  proposal: Proposal | null;
+  selection: Selection | null;
+  onSelect?: (selection: Selection) => void;
 }) {
   if (shifts.length === 0) {
     return <EmptyState text="No shifts this week." />;
   }
 
+  const shown = proposal?.draft ?? published;
+  const names = published ? nameLookup(published, ...(proposal ? [proposal.draft] : [])) : null;
   const days = Array.from({ length: 7 }, (_, i) => addDays(week, i));
   const slots = uniqueSlots(shifts);
-  const missing = schedule?.shortages.reduce((total, s) => total + s.missing, 0) ?? 0;
 
   return (
     <section>
       <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-        {schedule ? (
+        {published ? (
           <>
-            <Badge tone="green">Published · revision {schedule.revision_number}</Badge>
-            {missing > 0 ? (
-              <Badge tone="amber">{missing} position(s) short</Badge>
+            <Badge tone="green">Published · revision {published.revision_number}</Badge>
+            {totalMissing(published) > 0 ? (
+              <Badge tone="amber">{totalMissing(published)} position(s) short</Badge>
             ) : (
               <Badge tone="green">Fully covered</Badge>
             )}
-            <span className="text-slate-500">{schedule.assignments.length} assignments</span>
+            <span className="text-slate-500">
+              {proposal ? "Showing the proposed repair" : "Click a name to record a call-out"}
+            </span>
           </>
         ) : (
           <Badge tone="slate">Nothing published for this week yet</Badge>
@@ -171,7 +411,16 @@ function WeekView({
                   );
                   return (
                     <td key={day} className="border-l border-slate-100 p-2">
-                      {shift && <ShiftCell shift={shift} schedule={schedule} />}
+                      {shift && (
+                        <ShiftCell
+                          shift={shift}
+                          schedule={shown}
+                          proposal={proposal}
+                          names={names}
+                          selection={selection}
+                          onSelect={onSelect}
+                        />
+                      )}
                     </td>
                   );
                 })}
@@ -184,7 +433,23 @@ function WeekView({
   );
 }
 
-function ShiftCell({ shift, schedule }: { shift: Shift; schedule: Schedule | null }) {
+function ShiftCell({
+  shift,
+  schedule,
+  proposal,
+  names,
+  selection,
+  onSelect,
+}: {
+  shift: Shift;
+  schedule: Schedule | null;
+  proposal: Proposal | null;
+  names: Map<number, string> | null;
+  selection: Selection | null;
+  onSelect?: (selection: Selection) => void;
+}) {
+  const changes = proposal?.draft.changes ?? [];
+
   return (
     <div className="space-y-2">
       {shift.requirements.map((requirement) => {
@@ -194,6 +459,14 @@ function ShiftCell({ shift, schedule }: { shift: Shift; schedule: Schedule | nul
           ) ?? [];
         const short = schedule?.shortages.find(
           (s) => s.shift_id === shift.id && s.role === requirement.role,
+        );
+        const added = new Set(
+          changes
+            .filter((c) => c.shift_id === shift.id && c.after_role === requirement.role)
+            .map((c) => c.employee_id),
+        );
+        const removed = changes.filter(
+          (c) => c.shift_id === shift.id && c.before_role === requirement.role,
         );
 
         return (
@@ -205,9 +478,42 @@ function ShiftCell({ shift, schedule }: { shift: Shift; schedule: Schedule | nul
               {short && <span className="text-amber-700">−{short.missing}</span>}
             </div>
             <ul>
-              {people.map((person) => (
-                <li key={person.employee_id} className="truncate">
-                  {person.employee_name}
+              {people.map((person) => {
+                const isAdded = added.has(person.employee_id);
+                const isSelected =
+                  selection?.assignment.employee_id === person.employee_id &&
+                  selection.shift.id === shift.id;
+                return (
+                  <li key={person.employee_id}>
+                    {onSelect ? (
+                      <button
+                        className={`w-full truncate rounded px-1 text-left hover:bg-amber-100 ${
+                          isSelected ? "bg-amber-200" : ""
+                        }`}
+                        onClick={() => onSelect({ assignment: person, shift })}
+                        title="Record a call-out"
+                      >
+                        {person.employee_name}
+                      </button>
+                    ) : (
+                      <span
+                        className={`block truncate rounded px-1 ${
+                          isAdded ? "bg-emerald-100 font-medium text-emerald-900" : ""
+                        }`}
+                      >
+                        {isAdded && "+ "}
+                        {person.employee_name}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+              {removed.map((change) => (
+                <li
+                  key={`removed-${change.employee_id}`}
+                  className="truncate rounded bg-red-50 px-1 text-red-700 line-through"
+                >
+                  {names?.get(change.employee_id) ?? `#${change.employee_id}`}
                 </li>
               ))}
             </ul>
@@ -216,6 +522,17 @@ function ShiftCell({ shift, schedule }: { shift: Shift; schedule: Schedule | nul
       })}
     </div>
   );
+}
+
+// Small pieces
+
+function Banner({ tone, children }: { tone: "red" | "green" | "slate"; children: React.ReactNode }) {
+  const colours = {
+    red: "border-red-200 bg-red-50 text-red-800",
+    green: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    slate: "border-slate-200 bg-white text-slate-700",
+  };
+  return <p className={`mb-4 rounded-md border px-4 py-3 text-sm ${colours[tone]}`}>{children}</p>;
 }
 
 function Badge({ tone, children }: { tone: "green" | "amber" | "slate"; children: React.ReactNode }) {
@@ -236,6 +553,24 @@ function EmptyState({ text }: { text: string }) {
 }
 
 // Helpers
+
+function totalMissing(schedule: Schedule): number {
+  return schedule.shortages.reduce((total, s) => total + s.missing, 0);
+}
+
+/** Employee names from the schedules, so removed people can still be named. */
+function nameLookup(...schedules: Schedule[]): Map<number, string> {
+  const names = new Map<number, string>();
+  for (const schedule of schedules) {
+    for (const a of schedule.assignments) names.set(a.employee_id, a.employee_name);
+  }
+  return names;
+}
+
+function shiftName(shift: Shift): string {
+  const start = shift.local_start.slice(0, 5);
+  return `${formatDay(shift.local_date)} ${shift.label ?? slotName(start).toLowerCase()}`;
+}
 
 type Slot = { key: string; name: string; start: string; end: string };
 

@@ -80,10 +80,44 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type Callout = {
+  id: number;
+  shift_id: number;
+  employee_id: number;
+  rest_of_day: boolean;
+  note: string | null;
+  reported_at: string;
+};
+
+/** A draft from the engine. `schedule` is null when no schedule was possible. */
+export type DraftResult = {
+  status: string;
+  conflicts: string[];
+  schedule: Schedule | null;
+};
+
+function post<T>(path: string, body: unknown = {}): Promise<T> {
+  return request<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
 export const api = {
   restaurants: () => request<Restaurant[]>("/restaurants"),
   shifts: (restaurantId: number, week: string) =>
     request<Shift[]>(`/restaurants/${restaurantId}/weeks/${week}/shifts`),
   published: (restaurantId: number, week: string) =>
     request<Schedule>(`/restaurants/${restaurantId}/weeks/${week}/published`),
+
+  callOut: (
+    restaurantId: number,
+    body: { shift_id: number; employee_id: number; rest_of_day: boolean; note?: string },
+  ) => post<Callout>(`/restaurants/${restaurantId}/callouts`, body),
+
+  repair: (restaurantId: number, week: string) =>
+    post<DraftResult>(`/restaurants/${restaurantId}/weeks/${week}/repair`),
+
+  publish: (restaurantId: number, schedule: Schedule, acceptShortages: boolean) =>
+    post<Schedule>(`/restaurants/${restaurantId}/schedules/${schedule.id}/publish`, {
+      expected_row_version: schedule.row_version,
+      accept_shortages: acceptShortages,
+    }),
 };
