@@ -1,4 +1,5 @@
-// Talks to the ShiftSense API. Types mirror api/stored_schemas.py.
+// Talks to the ShiftSense API. Types mirror api/stored_schemas.py,
+// api/staff_schemas.py and api/shift_schemas.py.
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -162,8 +163,61 @@ export type RiskReport = {
   risks: CalloutRisk[];
 };
 
+// Staff
+
+export type Skill = { id: number; name: string };
+
+export type Employee = {
+  id: number;
+  display_name: string;
+  status: "active" | "inactive";
+  max_hours: number;
+  target_hours: number | null;
+  skills: string[];
+  employee_number: string | null;
+  phone: string | null;
+};
+
+export type EmployeeIn = {
+  display_name: string;
+  max_hours: number;
+  target_hours: number | null;
+  skills: string[];
+  employee_number: string | null;
+  phone: string | null;
+};
+
+/** Times are "HH:MM" going in; the API sends back "HH:MM:SS". */
+export type WeeklyRule = { weekday: number; start_time: string; end_time: string };
+export type TimeWindow = { start_time: string; end_time: string };
+export type DateException = {
+  date: string;
+  available: boolean; // false = off all day
+  intervals: TimeWindow[];
+  note: string | null;
+};
+export type Availability = {
+  employee_id: number;
+  weekly: WeeklyRule[];
+  exceptions: DateException[];
+};
+
+// Shifts
+
+export type ShiftIn = {
+  local_date: string;
+  start_time: string; // "07:00"; an earlier end means the next day
+  end_time: string;
+  label: string | null;
+  requirements: { role: string; count: number; min_count: number | null }[];
+};
+
 function post<T>(path: string, body: unknown = {}): Promise<T> {
   return request<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
+function send<T>(method: "PUT" | "PATCH", path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method, body: JSON.stringify(body) });
 }
 
 export const api = {
@@ -204,9 +258,63 @@ export const api = {
       cover: cover ?? null,
     }),
 
+  /** A fresh draft for the week, ignoring what's published. */
+  draft: (restaurantId: number, week: string) =>
+    post<DraftResult>(`/restaurants/${restaurantId}/weeks/${week}/drafts`, { deterministic: true }),
+
   publish: (restaurantId: number, schedule: Schedule, acceptShortages: boolean) =>
     post<Schedule>(`/restaurants/${restaurantId}/schedules/${schedule.id}/publish`, {
       expected_row_version: schedule.row_version,
       accept_shortages: acceptShortages,
     }),
+
+  // Staff
+  skills: (restaurantId: number) => request<Skill[]>(`/restaurants/${restaurantId}/skills`),
+  addSkill: (restaurantId: number, name: string) =>
+    post<Skill>(`/restaurants/${restaurantId}/skills`, { name }),
+
+  employees: (restaurantId: number, includeInactive = false) =>
+    request<Employee[]>(
+      `/restaurants/${restaurantId}/employees?include_inactive=${includeInactive}`,
+    ),
+  addEmployee: (restaurantId: number, body: EmployeeIn) =>
+    post<Employee>(`/restaurants/${restaurantId}/employees`, body),
+  updateEmployee: (
+    restaurantId: number,
+    employeeId: number,
+    body: Partial<EmployeeIn> & { status?: Employee["status"] },
+  ) => send<Employee>("PATCH", `/restaurants/${restaurantId}/employees/${employeeId}`, body),
+
+  availability: (restaurantId: number, employeeId: number) =>
+    request<Availability>(`/restaurants/${restaurantId}/employees/${employeeId}/availability`),
+  setWeekly: (restaurantId: number, employeeId: number, rules: WeeklyRule[]) =>
+    send<Availability>(
+      "PUT",
+      `/restaurants/${restaurantId}/employees/${employeeId}/availability/weekly`,
+      { rules },
+    ),
+  setException: (
+    restaurantId: number,
+    employeeId: number,
+    date: string,
+    body: { available: boolean; intervals: TimeWindow[]; note: string | null },
+  ) =>
+    send<Availability>(
+      "PUT",
+      `/restaurants/${restaurantId}/employees/${employeeId}/availability/exceptions/${date}`,
+      body,
+    ),
+  removeException: (restaurantId: number, employeeId: number, date: string) =>
+    request<void>(
+      `/restaurants/${restaurantId}/employees/${employeeId}/availability/exceptions/${date}`,
+      { method: "DELETE" },
+    ),
+
+  // Shifts
+  addShift: (restaurantId: number, body: ShiftIn) =>
+    post<Shift>(`/restaurants/${restaurantId}/shifts`, body),
+  updateShift: (restaurantId: number, shiftId: number, body: Partial<ShiftIn>) =>
+    send<Shift>("PATCH", `/restaurants/${restaurantId}/shifts/${shiftId}`, body),
+  deleteShift: (restaurantId: number, shiftId: number) =>
+    request<void>(`/restaurants/${restaurantId}/shifts/${shiftId}`, { method: "DELETE" }),
 };

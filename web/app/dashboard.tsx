@@ -17,6 +17,10 @@ import {
   type Schedule,
   type Shift,
 } from "@/lib/api";
+import { addDays, formatDate, formatDay } from "@/lib/dates";
+
+import { ShiftEditor } from "./shift-editor";
+import { StaffPage } from "./staff";
 
 // The demo restaurant's week. Later this will default to the current week.
 const DEMO_WEEK = "2026-11-23";
@@ -32,10 +36,17 @@ type Proposal = { calledOut: Selection; report: OptionsReport; selected: number 
 /** What the grid shows while a repair is being considered. */
 type Preview = { draft: Schedule };
 
+/** A whole-week update (or a first schedule) waiting for approval. */
+type Update = { draft: Schedule; first: boolean };
+
+/** The shift form: adding one, or editing one. */
+type Editing = { shift?: Shift };
+
 /** Call-out risk per assignment, keyed by `${shift_id}-${employee_id}`. */
 type RiskLookup = Map<string, CalloutRisk>;
 
 export function Dashboard() {
+  const [tab, setTab] = useState<"schedule" | "staff">("schedule");
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [restaurantId, setRestaurantId] = useState<number | null>(null);
   const [week, setWeek] = useState(DEMO_WEEK);
@@ -44,9 +55,15 @@ export function Dashboard() {
 
   const [selection, setSelection] = useState<Selection | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
   const [risk, setRisk] = useState<RiskReport | null>(null);
   // An explanation on screen: why a repair failed, or why a red name is red.
-  const [why, setWhy] = useState<{ explanation: Explanation; title: string; callOut?: Selection } | null>(null);
+  const [why, setWhy] = useState<{
+    explanation: Explanation;
+    title: string;
+    callOut?: Selection;
+  } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -89,6 +106,8 @@ export function Dashboard() {
     update();
     setSelection(null);
     setProposal(null);
+    setUpdate(null);
+    setEditing(null);
     setRisk(null);
     setWhy(null);
     setError(null);
@@ -207,7 +226,9 @@ export function Dashboard() {
         },
       );
       if (!saved.schedule) {
-        setError("That option is no longer possible. Record the call-out again to see new options.");
+        setError(
+          "That option is no longer possible. Record the call-out again to see new options.",
+        );
         setProposal(null);
         return;
       }
@@ -230,7 +251,74 @@ export function Dashboard() {
     }
   }
 
+  /**
+   * Bring the published week up to date with staff, availability and shift
+   * changes (and any call-outs), or make the week's first schedule.
+   */
+  async function proposeUpdate() {
+    if (restaurantId === null || !data) return;
+    const first = data.schedule === null;
+    setBusy(
+      first ? "Building the week's schedule…" : "Checking the week against the latest changes…",
+    );
+    setError(null);
+    setNotice(null);
+    setRisk(null);
+    setWhy(null);
+    setEditing(null);
+    try {
+      const result = first
+        ? await api.draft(restaurantId, week)
+        : await api.repair(restaurantId, week);
+      if (!result.schedule) {
+        if (result.explanation) {
+          setWhy({
+            explanation: result.explanation,
+            title: "No schedule possible with the current call-outs",
+          });
+        } else {
+          setError(
+            "No schedule is possible. Usually a required role on some shift has nobody available: " +
+              "check the shift's minimums and the staff's weekly hours.",
+          );
+        }
+        return;
+      }
+      if (!first && (result.schedule.changes ?? []).length === 0) {
+        setNotice("Nothing to change: the published schedule already fits.");
+        return;
+      }
+      setUpdate({ draft: result.schedule, first });
+    } catch (e) {
+      setError((e as ApiError).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function publishUpdate(acceptShortages: boolean) {
+    if (!update || restaurantId === null) return;
+    setBusy("Publishing…");
+    setError(null);
+    try {
+      const published = await api.publish(restaurantId, update.draft, acceptShortages);
+      setUpdate(null);
+      setNotice(`Revision ${published.revision_number} is now live.`);
+      setReloads((n) => n + 1);
+    } catch (e) {
+      const err = e as ApiError;
+      setError(err.code === "stale" ? `${err.message} The page has been reloaded.` : err.message);
+      if (err.code === "stale") {
+        setUpdate(null);
+        setReloads((n) => n + 1);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const restaurant = restaurants.find((r) => r.id === restaurantId);
+  const reviewing = proposal !== null || update !== null;
 
   return (
     <main className="mx-auto max-w-7xl p-6">
@@ -241,6 +329,20 @@ export function Dashboard() {
             {restaurant ? `${restaurant.name} · ${restaurant.timezone}` : "Loading…"}
           </p>
         </div>
+
+        <nav className="flex rounded-md border border-slate-300 bg-white p-0.5 text-sm">
+          {(["schedule", "staff"] as const).map((name) => (
+            <button
+              key={name}
+              className={`rounded px-3 py-1 capitalize ${
+                tab === name ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+              }`}
+              onClick={() => changeView(() => setTab(name))}
+            >
+              {name}
+            </button>
+          ))}
+        </nav>
 
         <div className="flex items-center gap-3">
           <select
@@ -256,87 +358,168 @@ export function Dashboard() {
             ))}
           </select>
 
-          <div className="flex items-center rounded-md border border-slate-300 bg-white text-sm">
-            <button
-              className="px-3 py-1.5 hover:bg-slate-100"
-              onClick={() => changeView(() => setWeek(addDays(week, -7)))}
-              aria-label="Previous week"
-            >
-              ‹
-            </button>
-            <span className="px-2">Week of {formatDate(week)}</span>
-            <button
-              className="px-3 py-1.5 hover:bg-slate-100"
-              onClick={() => changeView(() => setWeek(addDays(week, 7)))}
-              aria-label="Next week"
-            >
-              ›
-            </button>
-          </div>
+          {tab === "schedule" && (
+            <div className="flex items-center rounded-md border border-slate-300 bg-white text-sm">
+              <button
+                className="px-3 py-1.5 hover:bg-slate-100"
+                onClick={() => changeView(() => setWeek(addDays(week, -7)))}
+                aria-label="Previous week"
+              >
+                ‹
+              </button>
+              <span className="px-2">Week of {formatDate(week)}</span>
+              <button
+                className="px-3 py-1.5 hover:bg-slate-100"
+                onClick={() => changeView(() => setWeek(addDays(week, 7)))}
+                aria-label="Next week"
+              >
+                ›
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
-      {error && <Banner tone="red">{error}</Banner>}
-      {notice && <Banner tone="green">{notice}</Banner>}
-      {busy && <Banner tone="slate">{busy}</Banner>}
+      {tab === "staff" && restaurantId !== null && <StaffPage restaurantId={restaurantId} />}
 
-      {risk && !proposal && !busy && data && (
-        <RiskSummary report={risk} shifts={data.shifts} onClose={() => setRisk(null)} />
-      )}
+      {tab === "schedule" && (
+        <>
+          {error && <Banner tone="red">{error}</Banner>}
+          {notice && <Banner tone="green">{notice}</Banner>}
+          {busy && <Banner tone="slate">{busy}</Banner>}
 
-      {why && data && !busy && (
-        <WhyPanel
-          title={why.title}
-          explanation={why.explanation}
-          shifts={data.shifts}
-          onCallOut={why.callOut ? () => { setSelection(why.callOut!); setWhy(null); } : undefined}
-          onClose={() => setWhy(null)}
-        />
-      )}
+          {risk && !reviewing && !busy && data && (
+            <RiskSummary report={risk} shifts={data.shifts} onClose={() => setRisk(null)} />
+          )}
 
-      {data && data.callouts.length > 0 && !proposal && (
-        <CalloutList
-          callouts={data.callouts}
-          shifts={data.shifts}
-          published={data.schedule}
-          onCancel={busy ? undefined : cancelCallout}
-        />
-      )}
+          {why && data && !busy && (
+            <WhyPanel
+              title={why.title}
+              explanation={why.explanation}
+              shifts={data.shifts}
+              onCallOut={
+                why.callOut
+                  ? () => {
+                      setSelection(why.callOut!);
+                      setWhy(null);
+                    }
+                  : undefined
+              }
+              onClose={() => setWhy(null)}
+            />
+          )}
 
-      {selection && !busy && (
-        <CalloutPanel
-          selection={selection}
-          onConfirm={callOut}
-          onCancel={() => setSelection(null)}
-        />
-      )}
+          {data && data.callouts.length > 0 && !reviewing && (
+            <CalloutList
+              callouts={data.callouts}
+              shifts={data.shifts}
+              published={data.schedule}
+              onCancel={busy ? undefined : cancelCallout}
+            />
+          )}
 
-      {proposal && !busy && data?.schedule && (
-        <OptionsPanel
-          proposal={proposal}
-          published={data.schedule}
-          shifts={data.shifts}
-          callouts={data.callouts}
-          onSelect={(index) => setProposal({ ...proposal, selected: index })}
-          onApprove={approve}
-          onDiscard={() => {
-            setProposal(null);
-            setWhy(null);
-          }}
-        />
-      )}
+          {selection && !busy && (
+            <CalloutPanel
+              selection={selection}
+              onConfirm={callOut}
+              onCancel={() => setSelection(null)}
+            />
+          )}
 
-      {data && (
-        <WeekView
-          week={week}
-          shifts={data.shifts}
-          published={data.schedule}
-          proposal={proposal && data.schedule ? previewOf(proposal, data.schedule) : null}
-          selection={selection}
-          risks={risk && !proposal ? riskLookup(risk) : null}
-          onCheckRisk={busy || proposal ? undefined : checkRisk}
-          onSelect={busy || proposal ? undefined : selectPerson}
-        />
+          {proposal && !busy && data?.schedule && (
+            <OptionsPanel
+              proposal={proposal}
+              published={data.schedule}
+              shifts={data.shifts}
+              callouts={data.callouts}
+              onSelect={(index) => setProposal({ ...proposal, selected: index })}
+              onApprove={approve}
+              onDiscard={() => {
+                setProposal(null);
+                setWhy(null);
+              }}
+            />
+          )}
+
+          {data && !reviewing && !busy && restaurantId !== null && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+              <button
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-100"
+                onClick={() => {
+                  setWhy(null);
+                  setNotice(null);
+                  setError(null);
+                  setEditing({});
+                }}
+              >
+                + Add shift
+              </button>
+              {data.shifts.length > 0 && (
+                <button
+                  className="rounded-md bg-slate-900 px-3 py-1.5 font-medium text-white hover:bg-slate-700"
+                  onClick={proposeUpdate}
+                  title="Re-plan the week after staff, hours or shift changes, changing as little as possible"
+                >
+                  {data.schedule ? "Update schedule" : "Create schedule"}
+                </button>
+              )}
+            </div>
+          )}
+
+          {editing && restaurantId !== null && !busy && (
+            <ShiftEditor
+              key={editing.shift?.id ?? "new"}
+              restaurantId={restaurantId}
+              week={week}
+              shift={editing.shift}
+              onSaved={(message) => {
+                setEditing(null);
+                setNotice(message);
+                setReloads((n) => n + 1);
+              }}
+              onClose={() => setEditing(null)}
+            />
+          )}
+
+          {update && data && !busy && (
+            <UpdatePanel
+              update={update}
+              published={data.schedule}
+              shifts={data.shifts}
+              onApprove={publishUpdate}
+              onDiscard={() => setUpdate(null)}
+            />
+          )}
+
+          {data && (
+            <WeekView
+              week={week}
+              shifts={data.shifts}
+              published={data.schedule}
+              proposal={
+                update
+                  ? { draft: update.draft }
+                  : proposal && data.schedule
+                    ? previewOf(proposal, data.schedule)
+                    : null
+              }
+              selection={selection}
+              risks={risk && !reviewing ? riskLookup(risk) : null}
+              onCheckRisk={busy || reviewing ? undefined : checkRisk}
+              onSelect={busy || reviewing ? undefined : selectPerson}
+              onEditShift={
+                busy || reviewing
+                  ? undefined
+                  : (shift) => {
+                      setWhy(null);
+                      setNotice(null);
+                      setError(null);
+                      setEditing({ shift });
+                    }
+              }
+            />
+          )}
+        </>
       )}
     </main>
   );
@@ -379,6 +562,87 @@ function CalloutPanel({
       <button className="px-2 py-1.5 text-slate-600 hover:underline" onClick={onCancel}>
         Cancel
       </button>
+    </div>
+  );
+}
+
+/** A re-planned week (or a first schedule), waiting for the manager's approval. */
+function UpdatePanel({
+  update,
+  published,
+  shifts,
+  onApprove,
+  onDiscard,
+}: {
+  update: Update;
+  published: Schedule | null;
+  shifts: Shift[];
+  onApprove: (acceptShortages: boolean) => void;
+  onDiscard: () => void;
+}) {
+  const [acceptShortages, setAcceptShortages] = useState(false);
+  const { draft, first } = update;
+  const missing = totalMissing(draft);
+  const names = nameLookup(draft, ...(published ? [published] : []));
+  const changes = draft.changes ?? [];
+  const byShift = new Map(shifts.map((s) => [s.id, s]));
+
+  return (
+    <div className="mb-4 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sm">
+      <h2 className="mb-1 font-semibold">
+        {first
+          ? `New schedule: ${draft.assignments.length} assignments`
+          : `${changes.length} change${changes.length === 1 ? "" : "s"} to bring the week up to date`}
+      </h2>
+      <p className="mb-3 text-slate-600">
+        {first
+          ? "Shown in the grid below. Nothing is live until you publish."
+          : "Picked to change as little as possible. Shown in the grid below."}
+        {missing > 0 && ` Still ${missing} position(s) short.`}
+      </p>
+
+      {!first && (
+        <ul className="mb-3 max-h-48 space-y-0.5 overflow-y-auto">
+          {changes.map((c) => {
+            const shift = byShift.get(c.shift_id);
+            const where = shift ? shiftName(shift) : "a removed shift";
+            const name = names.get(c.employee_id) ?? `#${c.employee_id}`;
+            return (
+              <li
+                key={`${c.shift_id}-${c.employee_id}`}
+                className={c.after_role ? "text-emerald-800" : "text-red-700"}
+              >
+                {c.after_role
+                  ? `+ ${name} on ${where} (${c.after_role}${c.before_role ? `, was ${c.before_role}` : ""})`
+                  : `− ${name} off ${where} (${c.before_role})`}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        {missing > 0 && (
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={acceptShortages}
+              onChange={(e) => setAcceptShortages(e.target.checked)}
+            />
+            Publish with {missing} position(s) short
+          </label>
+        )}
+        <button
+          className="rounded-md bg-emerald-700 px-3 py-1.5 font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
+          disabled={missing > 0 && !acceptShortages}
+          onClick={() => onApprove(acceptShortages)}
+        >
+          Approve &amp; publish
+        </button>
+        <button className="px-2 py-1.5 text-slate-600 hover:underline" onClick={onDiscard}>
+          Discard
+        </button>
+      </div>
     </div>
   );
 }
@@ -455,9 +719,11 @@ function OptionsPanel({
               )}
             </p>
             <ul className="space-y-0.5 text-slate-600">
-              {optionFacts(choice, report.options[0], calledOut, callouts, names, shifts).map((fact) => (
-                <li key={fact}>{fact}</li>
-              ))}
+              {optionFacts(choice, report.options[0], calledOut, callouts, names, shifts).map(
+                (fact) => (
+                  <li key={fact}>{fact}</li>
+                ),
+              )}
             </ul>
           </button>
         ))}
@@ -596,6 +862,7 @@ function WeekView({
   risks,
   onCheckRisk,
   onSelect,
+  onEditShift,
 }: {
   week: string;
   shifts: Shift[];
@@ -605,6 +872,7 @@ function WeekView({
   risks: RiskLookup | null;
   onCheckRisk?: () => void;
   onSelect?: (selection: Selection) => void;
+  onEditShift?: (shift: Shift) => void;
 }) {
   if (shifts.length === 0) {
     return <EmptyState text="No shifts this week." />;
@@ -627,7 +895,7 @@ function WeekView({
               <Badge tone="green">Fully covered</Badge>
             )}
             <span className="text-slate-500">
-              {proposal ? "Showing the selected option" : "Click a name to record a call-out"}
+              {proposal ? "Showing the proposed changes" : "Click a name to record a call-out"}
             </span>
             {onCheckRisk && (
               <button
@@ -639,7 +907,10 @@ function WeekView({
             )}
           </>
         ) : (
-          <Badge tone="slate">Nothing published for this week yet</Badge>
+          <>
+            <Badge tone="slate">Nothing published for this week yet</Badge>
+            {proposal && <span className="text-slate-500">Showing the proposed schedule</span>}
+          </>
         )}
       </div>
 
@@ -665,9 +936,7 @@ function WeekView({
                   </div>
                 </td>
                 {days.map((day) => {
-                  const shift = shifts.find(
-                    (s) => s.local_date === day && slotKey(s) === slot.key,
-                  );
+                  const shift = shifts.find((s) => s.local_date === day && slotKey(s) === slot.key);
                   return (
                     <td key={day} className="border-l border-slate-100 p-2">
                       {shift && (
@@ -679,6 +948,7 @@ function WeekView({
                           selection={selection}
                           risks={risks}
                           onSelect={onSelect}
+                          onEdit={onEditShift}
                         />
                       )}
                     </td>
@@ -701,6 +971,7 @@ function ShiftCell({
   selection,
   risks,
   onSelect,
+  onEdit,
 }: {
   shift: Shift;
   schedule: Schedule | null;
@@ -709,11 +980,12 @@ function ShiftCell({
   selection: Selection | null;
   risks: RiskLookup | null;
   onSelect?: (selection: Selection) => void;
+  onEdit?: (shift: Shift) => void;
 }) {
   const changes = proposal?.draft.changes ?? [];
 
   return (
-    <div className="space-y-2">
+    <div className="group space-y-2">
       {shift.requirements.map((requirement) => {
         const people =
           schedule?.assignments.filter(
@@ -790,6 +1062,14 @@ function ShiftCell({
           </div>
         );
       })}
+      {onEdit && (
+        <button
+          className="text-[11px] text-slate-400 opacity-0 hover:text-sky-700 hover:underline focus:opacity-100 group-hover:opacity-100"
+          onClick={() => onEdit(shift)}
+        >
+          Edit shift
+        </button>
+      )}
     </div>
   );
 }
@@ -1026,7 +1306,13 @@ function riskTitle(name: string, risk: CalloutRisk | undefined): string {
 
 // Small pieces
 
-function Banner({ tone, children }: { tone: "red" | "green" | "slate"; children: React.ReactNode }) {
+function Banner({
+  tone,
+  children,
+}: {
+  tone: "red" | "green" | "slate";
+  children: React.ReactNode;
+}) {
   const colours = {
     red: "border-red-200 bg-red-50 text-red-800",
     green: "border-emerald-200 bg-emerald-50 text-emerald-800",
@@ -1035,7 +1321,13 @@ function Banner({ tone, children }: { tone: "red" | "green" | "slate"; children:
   return <p className={`mb-4 rounded-md border px-4 py-3 text-sm ${colours[tone]}`}>{children}</p>;
 }
 
-function Badge({ tone, children }: { tone: "green" | "amber" | "slate"; children: React.ReactNode }) {
+function Badge({
+  tone,
+  children,
+}: {
+  tone: "green" | "amber" | "slate";
+  children: React.ReactNode;
+}) {
   const colours = {
     green: "bg-emerald-50 text-emerald-800 border-emerald-200",
     amber: "bg-amber-50 text-amber-800 border-amber-200",
@@ -1098,31 +1390,8 @@ function uniqueSlots(shifts: Shift[]): Slot[] {
 
 function slotName(start: string): string {
   const hour = Number(start.slice(0, 2));
+  if (hour < 11) return "Breakfast";
   if (hour < 15) return "Lunch";
   if (hour < 22) return "Dinner";
   return "Late close";
-}
-
-// Dates are plain "YYYY-MM-DD" strings; UTC avoids the browser's timezone.
-function addDays(isoDate: string, days: number): string {
-  const date = new Date(`${isoDate}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function formatDate(isoDate: string): string {
-  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-function formatDay(isoDate: string): string {
-  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-GB", {
-    weekday: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
 }
