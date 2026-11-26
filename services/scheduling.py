@@ -276,7 +276,7 @@ def record_absence(
     return absence
 
 
-def _week_callouts(session: Session, inputs: WeekInputs):
+def week_callouts(session: Session, inputs: WeekInputs):
     """Absences affecting the week, as (employee_id, shift, rest_of_day).
 
     Includes call-outs from the day before the week, since "rest of day"
@@ -331,7 +331,7 @@ def repair_published(
         raise LookupError("There is no published schedule for that week to repair.")
 
     excluded = exclusions_for_callouts(
-        _week_callouts(session, inputs), inputs.shifts, inputs.timezone
+        week_callouts(session, inputs), inputs.shifts, inputs.timezone
     )
 
     result = engine.repair(

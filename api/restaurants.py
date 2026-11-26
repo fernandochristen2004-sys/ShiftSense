@@ -27,11 +27,13 @@ from api.deps import get_session
 from api.schemas import ShortageOut
 from api.stored_schemas import (
     CalloutOut,
+    CalloutRiskOut,
     DraftRequest,
     DraftResponse,
     PublishRequest,
     RequirementOut,
     RestaurantOut,
+    RiskReportOut,
     ScheduleDetail,
     ScheduleSummary,
     ShiftOut,
@@ -40,6 +42,7 @@ from api.stored_schemas import (
 )
 from db import models as db
 from services.loading import load_restaurant
+from services.risk import callout_risk
 from services.scheduling import (
     DraftOutcome,
     ShortagesNotAcceptedError,
@@ -408,3 +411,42 @@ def repair_week(
         response = _draft_response(session, outcome)
     session.commit()
     return response
+
+
+@router.get("/{restaurant_id}/weeks/{week_start}/risk", response_model=RiskReportOut)
+def get_callout_risk(
+    restaurant_id: int,
+    week_start: date,
+    session: Session = Depends(get_session),
+) -> RiskReportOut:
+    """What happens if each scheduled person calls out.
+
+    Simulates a call-out for every assignment in the published week and runs
+    a repair for each. Takes a few seconds; nothing is saved.
+    """
+    with _service_errors():
+        report = callout_risk(session, restaurant_id, week_start)
+
+    names = dict(session.execute(
+        select(db.Employee.id, db.Employee.display_name)
+        .where(db.Employee.restaurant_id == restaurant_id)
+    ).all())
+    return RiskReportOut(
+        schedule_id=report.schedule_id,
+        week_fixable=report.week_fixable,
+        baseline_missing=report.baseline_missing,
+        checked=len(report.risks),
+        at_risk=len(report.at_risk),
+        risks=[
+            CalloutRiskOut(
+                shift_id=risk.shift_id,
+                employee_id=risk.employee_id,
+                employee_name=names.get(risk.employee_id, f"#{risk.employee_id}"),
+                role=risk.role,
+                level=risk.level,
+                extra_missing=risk.extra_missing,
+                changes=risk.changes,
+            )
+            for risk in report.risks
+        ],
+    )

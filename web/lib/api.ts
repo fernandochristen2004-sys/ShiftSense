@@ -96,6 +96,25 @@ export type DraftResult = {
   schedule: Schedule | null;
 };
 
+export type CalloutRisk = {
+  shift_id: number;
+  employee_id: number;
+  employee_name: string;
+  role: string;
+  level: "covered" | "short" | "no_fix";
+  extra_missing: number | null;
+  changes: number | null;
+};
+
+export type RiskReport = {
+  schedule_id: number;
+  week_fixable: boolean;
+  baseline_missing: number;
+  checked: number;
+  at_risk: number;
+  risks: CalloutRisk[];
+};
+
 function post<T>(path: string, body: unknown = {}): Promise<T> {
   return request<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
@@ -106,6 +125,9 @@ export const api = {
     request<Shift[]>(`/restaurants/${restaurantId}/weeks/${week}/shifts`),
   published: (restaurantId: number, week: string) =>
     request<Schedule>(`/restaurants/${restaurantId}/weeks/${week}/published`),
+
+  risk: (restaurantId: number, week: string) =>
+    request<RiskReport>(`/restaurants/${restaurantId}/weeks/${week}/risk`),
 
   callOut: (
     restaurantId: number,

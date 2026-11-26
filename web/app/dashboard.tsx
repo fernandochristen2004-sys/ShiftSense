@@ -6,7 +6,9 @@ import {
   api,
   ApiError,
   type Assignment,
+  type CalloutRisk,
   type Restaurant,
+  type RiskReport,
   type Schedule,
   type Shift,
 } from "@/lib/api";
@@ -22,6 +24,9 @@ type Selection = { assignment: Assignment; shift: Shift };
 /** A repair waiting for the manager's approval. */
 type Proposal = { draft: Schedule; calledOut: Selection };
 
+/** Call-out risk per assignment, keyed by `${shift_id}-${employee_id}`. */
+type RiskLookup = Map<string, CalloutRisk>;
+
 export function Dashboard() {
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [restaurantId, setRestaurantId] = useState<number | null>(null);
@@ -31,6 +36,7 @@ export function Dashboard() {
 
   const [selection, setSelection] = useState<Selection | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [risk, setRisk] = useState<RiskReport | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -72,8 +78,24 @@ export function Dashboard() {
     update();
     setSelection(null);
     setProposal(null);
+    setRisk(null);
     setError(null);
     setNotice(null);
+  }
+
+  /** Simulate a call-out for every assignment and mark the risky ones. */
+  async function checkRisk() {
+    if (restaurantId === null) return;
+    setBusy("Simulating a call-out for every shift…");
+    setError(null);
+    setNotice(null);
+    try {
+      setRisk(await api.risk(restaurantId, week));
+    } catch (e) {
+      setError((e as ApiError).message);
+    } finally {
+      setBusy(null);
+    }
   }
 
   /** Record the call-out, then ask the engine for the smallest repair. */
@@ -82,6 +104,7 @@ export function Dashboard() {
     setBusy("Finding cover…");
     setError(null);
     setNotice(null);
+    setRisk(null);
     try {
       await api.callOut(restaurantId, {
         shift_id: selection.shift.id,
@@ -178,6 +201,8 @@ export function Dashboard() {
       {notice && <Banner tone="green">{notice}</Banner>}
       {busy && <Banner tone="slate">{busy}</Banner>}
 
+      {risk && !proposal && !busy && <RiskSummary report={risk} onClose={() => setRisk(null)} />}
+
       {selection && !busy && (
         <CalloutPanel
           selection={selection}
@@ -203,6 +228,8 @@ export function Dashboard() {
           published={data.schedule}
           proposal={proposal}
           selection={selection}
+          risks={risk && !proposal ? riskLookup(risk) : null}
+          onCheckRisk={busy || proposal ? undefined : checkRisk}
           onSelect={busy || proposal ? undefined : setSelection}
         />
       )}
@@ -346,6 +373,8 @@ function WeekView({
   published,
   proposal,
   selection,
+  risks,
+  onCheckRisk,
   onSelect,
 }: {
   week: string;
@@ -353,6 +382,8 @@ function WeekView({
   published: Schedule | null;
   proposal: Proposal | null;
   selection: Selection | null;
+  risks: RiskLookup | null;
+  onCheckRisk?: () => void;
   onSelect?: (selection: Selection) => void;
 }) {
   if (shifts.length === 0) {
@@ -378,6 +409,14 @@ function WeekView({
             <span className="text-slate-500">
               {proposal ? "Showing the proposed repair" : "Click a name to record a call-out"}
             </span>
+            {onCheckRisk && (
+              <button
+                className="ml-auto rounded-md border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100"
+                onClick={onCheckRisk}
+              >
+                Check call-out risk
+              </button>
+            )}
           </>
         ) : (
           <Badge tone="slate">Nothing published for this week yet</Badge>
@@ -418,6 +457,7 @@ function WeekView({
                           proposal={proposal}
                           names={names}
                           selection={selection}
+                          risks={risks}
                           onSelect={onSelect}
                         />
                       )}
@@ -439,6 +479,7 @@ function ShiftCell({
   proposal,
   names,
   selection,
+  risks,
   onSelect,
 }: {
   shift: Shift;
@@ -446,6 +487,7 @@ function ShiftCell({
   proposal: Proposal | null;
   names: Map<number, string> | null;
   selection: Selection | null;
+  risks: RiskLookup | null;
   onSelect?: (selection: Selection) => void;
 }) {
   const changes = proposal?.draft.changes ?? [];
@@ -483,17 +525,25 @@ function ShiftCell({
                 const isSelected =
                   selection?.assignment.employee_id === person.employee_id &&
                   selection.shift.id === shift.id;
+                const personRisk = risks?.get(`${shift.id}-${person.employee_id}`);
                 return (
                   <li key={person.employee_id}>
                     {onSelect ? (
                       <button
-                        className={`w-full truncate rounded px-1 text-left hover:bg-amber-100 ${
-                          isSelected ? "bg-amber-200" : ""
+                        className={`flex w-full items-center gap-1.5 truncate rounded px-1 text-left hover:bg-amber-100 ${
+                          isSelected ? "bg-amber-200" : riskBackground(personRisk)
                         }`}
                         onClick={() => onSelect({ assignment: person, shift })}
-                        title="Record a call-out"
+                        title={riskTitle(person.employee_name, personRisk)}
                       >
-                        {person.employee_name}
+                        {personRisk && personRisk.level !== "covered" && (
+                          <span
+                            className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+                              personRisk.level === "no_fix" ? "bg-red-600" : "bg-amber-500"
+                            }`}
+                          />
+                        )}
+                        <span className="truncate">{person.employee_name}</span>
                       </button>
                     ) : (
                       <span
@@ -522,6 +572,67 @@ function ShiftCell({
       })}
     </div>
   );
+}
+
+function RiskSummary({ report, onClose }: { report: RiskReport; onClose: () => void }) {
+  const count = (level: CalloutRisk["level"]) =>
+    report.risks.filter((r) => r.level === level).length;
+
+  if (!report.week_fixable) {
+    return (
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        <strong>Call-out risk</strong>
+        <span>
+          A call-out already recorded this week can&apos;t be covered, so no repair is possible
+          right now. Find extra staff for that shift first, then check again.
+        </span>
+        <button className="ml-auto text-red-700 hover:underline" onClick={onClose}>
+          Hide
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm">
+      <strong>Call-out risk</strong>
+      <span className="text-slate-600">Simulated {report.checked} call-outs:</span>
+      <span className="text-emerald-700">{count("covered")} covered</span>
+      <span className="flex items-center gap-1.5 text-amber-700">
+        <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+        {count("short")} leave a position short
+      </span>
+      <span className="flex items-center gap-1.5 text-red-700">
+        <span className="inline-block h-2 w-2 rounded-full bg-red-600" />
+        {count("no_fix")} can&apos;t be fixed
+      </span>
+      <span className="text-slate-500">Hover a name for details.</span>
+      <button className="ml-auto text-slate-600 hover:underline" onClick={onClose}>
+        Hide
+      </button>
+    </div>
+  );
+}
+
+function riskLookup(report: RiskReport): RiskLookup {
+  return new Map(report.risks.map((r) => [`${r.shift_id}-${r.employee_id}`, r]));
+}
+
+function riskBackground(risk: CalloutRisk | undefined): string {
+  if (risk?.level === "no_fix") return "bg-red-50";
+  if (risk?.level === "short") return "bg-amber-50";
+  return "";
+}
+
+function riskTitle(name: string, risk: CalloutRisk | undefined): string {
+  if (!risk) return "Record a call-out";
+  if (risk.level === "no_fix") {
+    return `If ${name} calls out, no repair keeps this week within its minimum staffing.`;
+  }
+  if (risk.level === "short") {
+    return `If ${name} calls out, the best repair leaves ${risk.extra_missing} more position(s) short.`;
+  }
+  return `If ${name} calls out, it can be covered with ${risk.changes} change(s).`;
 }
 
 // Small pieces

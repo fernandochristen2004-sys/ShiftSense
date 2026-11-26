@@ -107,3 +107,26 @@ class ShiftOut(ApiModel):
     local_start: time = Field(description="Restaurant time")
     local_end: time = Field(description="Restaurant time; earlier than local_start if it ends after midnight")
     requirements: list[RequirementOut]
+
+
+# Call-out risk
+
+class CalloutRiskOut(ApiModel):
+    shift_id: int
+    employee_id: int
+    employee_name: str
+    role: str
+    level: str = Field(description="covered, short (positions left unfilled) or no_fix")
+    extra_missing: int | None = Field(description="Positions left unfilled; null when no fix exists")
+    changes: int | None = Field(description="Changes the repair needs; null when no fix exists")
+
+
+class RiskReportOut(ApiModel):
+    schedule_id: int
+    week_fixable: bool = Field(
+        description="False when call-outs already recorded can't be repaired; risks is then empty",
+    )
+    baseline_missing: int = Field(description="Positions already short before any new call-out")
+    checked: int = Field(description="Assignments simulated")
+    at_risk: int = Field(description="Call-outs that would leave the week worse off")
+    risks: list[CalloutRiskOut]

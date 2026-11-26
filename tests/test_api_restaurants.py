@@ -417,3 +417,24 @@ def test_demo_staff_have_friendly_names(client, demo):
     names = {a["employee_name"] for a in _draft(client, demo)["assignments"]}
     assert "Asha" in names or "Ben" in names
     assert not any(name.startswith("Employee ") for name in names)
+
+
+# Call-out risk
+
+def test_risk_needs_a_published_schedule(client, demo):
+    _draft(client, demo)
+    response = client.get(_base(demo) + WEEK + "/risk")
+    assert response.status_code == 404
+
+
+def test_risk_report(client, demo):
+    published = _publish(client, demo, _draft(client, demo))
+
+    response = client.get(_base(demo) + WEEK + "/risk")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedule_id"] == published["id"]
+    assert body["checked"] == len(published["assignments"]) == len(body["risks"])
+    assert body["at_risk"] == sum(r["level"] != "covered" for r in body["risks"])
+    assert all(r["employee_name"] for r in body["risks"])
