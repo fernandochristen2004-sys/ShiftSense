@@ -81,6 +81,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** Why a call-out can't be covered: one entry per gap nobody can fill. */
+export type Explanation = {
+  summary: string;
+  together_only: boolean; // everyone's free on their own, just not all at once
+  gaps: {
+    shift_id: number;
+    role: string;
+    called_out: { employee_id: number; name: string }[];
+    candidates: Candidate[]; // easiest to act on first
+  }[];
+};
+
+export type Candidate = {
+  employee_id: number;
+  name: string;
+  reason: "on_shift" | "busy" | "rest" | "max_hours" | "unavailable" | null; // null = free
+  other_shift_id: number | null;
+  other_role: string | null;
+  worked_hours: number | null;
+  max_hours: number | null;
+};
+
 export type Callout = {
   id: number;
   shift_id: number;
@@ -95,7 +117,7 @@ export type DraftResult = {
   status: string;
   conflicts: string[];
   schedule: Schedule | null;
-  explanation: string | null; // why the call-outs can't be covered
+  explanation: Explanation | null; // why the call-outs can't be covered
 };
 
 export type CalloutRisk = {
@@ -106,13 +128,13 @@ export type CalloutRisk = {
   level: "covered" | "short" | "no_fix";
   extra_missing: number | null;
   changes: number | null;
-  reason: string | null; // why no repair exists
+  why: Explanation | null; // why no repair exists
 };
 
 export type RiskReport = {
   schedule_id: number;
   week_fixable: boolean;
-  blocker: string | null;
+  blocker: Explanation | null;
   baseline_missing: number;
   checked: number;
   at_risk: number;

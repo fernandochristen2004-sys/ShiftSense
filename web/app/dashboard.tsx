@@ -8,6 +8,8 @@ import {
   type Assignment,
   type Callout,
   type CalloutRisk,
+  type Candidate,
+  type Explanation,
   type Restaurant,
   type RiskReport,
   type Schedule,
@@ -38,6 +40,8 @@ export function Dashboard() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [risk, setRisk] = useState<RiskReport | null>(null);
+  // An explanation on screen: why a repair failed, or why a red name is red.
+  const [why, setWhy] = useState<{ explanation: Explanation; title: string; callOut?: Selection } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -81,8 +85,27 @@ export function Dashboard() {
     setSelection(null);
     setProposal(null);
     setRisk(null);
+    setWhy(null);
     setError(null);
     setNotice(null);
+  }
+
+  /** Clicking a name: red names explain first, others go straight to call-out. */
+  function selectPerson(next: Selection) {
+    const personRisk = risk?.risks.find(
+      (r) => r.shift_id === next.shift.id && r.employee_id === next.assignment.employee_id,
+    );
+    if (personRisk?.level === "no_fix" && personRisk.why) {
+      setSelection(null);
+      setWhy({
+        explanation: personRisk.why,
+        title: "If they call out, nobody can replace them",
+        callOut: next,
+      });
+    } else {
+      setWhy(null);
+      setSelection(next);
+    }
   }
 
   /** Simulate a call-out for every assignment and mark the risky ones. */
@@ -91,6 +114,7 @@ export function Dashboard() {
     setBusy("Simulating a call-out for every shift…");
     setError(null);
     setNotice(null);
+    setWhy(null);
     try {
       setRisk(await api.risk(restaurantId, week));
     } catch (e) {
@@ -107,6 +131,7 @@ export function Dashboard() {
     setError(null);
     setNotice(null);
     setRisk(null);
+    setWhy(null);
     try {
       await api.callOut(restaurantId, {
         shift_id: selection.shift.id,
@@ -115,10 +140,14 @@ export function Dashboard() {
       });
       const result = await api.repair(restaurantId, week);
       if (result.schedule === null) {
-        setError(
-          `No repair possible. ${result.explanation ?? ""} ` +
-            "The call-out is recorded; cancel it below if plans change.",
-        );
+        if (result.explanation) {
+          setWhy({
+            explanation: result.explanation,
+            title: "No repair possible. The call-out is recorded; cancel it below if plans change",
+          });
+        } else {
+          setError("No repair possible. The call-out is recorded; cancel it below if plans change.");
+        }
       } else {
         setProposal({ draft: result.schedule, calledOut: selection });
       }
@@ -140,6 +169,7 @@ export function Dashboard() {
       await api.cancelCallout(restaurantId, callout.id);
       setProposal(null);
       setRisk(null);
+      setWhy(null);
       setNotice("Call-out cancelled. Repairs and risk checks no longer include it.");
       setReloads((n) => n + 1);
     } catch (e) {
@@ -222,7 +252,19 @@ export function Dashboard() {
       {notice && <Banner tone="green">{notice}</Banner>}
       {busy && <Banner tone="slate">{busy}</Banner>}
 
-      {risk && !proposal && !busy && <RiskSummary report={risk} onClose={() => setRisk(null)} />}
+      {risk && !proposal && !busy && data && (
+        <RiskSummary report={risk} shifts={data.shifts} onClose={() => setRisk(null)} />
+      )}
+
+      {why && data && !busy && (
+        <WhyPanel
+          title={why.title}
+          explanation={why.explanation}
+          shifts={data.shifts}
+          onCallOut={why.callOut ? () => { setSelection(why.callOut!); setWhy(null); } : undefined}
+          onClose={() => setWhy(null)}
+        />
+      )}
 
       {data && data.callouts.length > 0 && !proposal && (
         <CalloutList
@@ -260,7 +302,7 @@ export function Dashboard() {
           selection={selection}
           risks={risk && !proposal ? riskLookup(risk) : null}
           onCheckRisk={busy || proposal ? undefined : checkRisk}
-          onSelect={busy || proposal ? undefined : setSelection}
+          onSelect={busy || proposal ? undefined : selectPerson}
         />
       )}
     </main>
@@ -604,9 +646,28 @@ function ShiftCell({
   );
 }
 
-function RiskSummary({ report, onClose }: { report: RiskReport; onClose: () => void }) {
+function RiskSummary({
+  report,
+  shifts,
+  onClose,
+}: {
+  report: RiskReport;
+  shifts: Shift[];
+  onClose: () => void;
+}) {
   const count = (level: CalloutRisk["level"]) =>
     report.risks.filter((r) => r.level === level).length;
+
+  if (!report.week_fixable && report.blocker) {
+    return (
+      <WhyPanel
+        title="A call-out already recorded this week can't be covered, so nothing else can be checked"
+        explanation={report.blocker}
+        shifts={shifts}
+        onClose={onClose}
+      />
+    );
+  }
 
   if (!report.week_fixable) {
     return (
@@ -614,7 +675,7 @@ function RiskSummary({ report, onClose }: { report: RiskReport; onClose: () => v
         <strong>Call-out risk</strong>
         <span>
           A call-out already recorded this week can&apos;t be covered, so no repair is possible
-          right now. {report.blocker}
+          right now.
         </span>
         <button className="ml-auto text-red-700 hover:underline" onClick={onClose}>
           Hide
@@ -636,12 +697,119 @@ function RiskSummary({ report, onClose }: { report: RiskReport; onClose: () => v
         <span className="inline-block h-2 w-2 rounded-full bg-red-600" />
         {count("no_fix")} can&apos;t be fixed
       </span>
-      <span className="text-slate-500">Hover a name for details.</span>
+      <span className="text-slate-500">Hover a name for details; click a red one to see why.</span>
       <button className="ml-auto text-slate-600 hover:underline" onClick={onClose}>
         Hide
       </button>
     </div>
   );
+}
+
+/** Why a gap can't be filled, laid out as a card per gap. */
+function WhyPanel({
+  title,
+  explanation,
+  shifts,
+  onCallOut,
+  onClose,
+}: {
+  title: string;
+  explanation: Explanation;
+  shifts: Shift[];
+  onCallOut?: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm">
+      <p className="mb-3 font-medium text-red-800">{title}</p>
+      <div className="flex flex-wrap gap-3">
+        {explanation.gaps.map((gap) => {
+          const shift = shifts.find((s) => s.id === gap.shift_id);
+          const who = gap.called_out.map((p) => p.name).join(", ");
+          return (
+            <div
+              key={`${gap.shift_id}-${gap.role}`}
+              className="min-w-72 flex-1 rounded-lg border border-slate-200 bg-white px-4 py-3"
+            >
+              <p className="flex items-center gap-2 font-medium">
+                <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-600" />
+                {who} can&apos;t be replaced
+              </p>
+              <p className="mb-2 ml-[18px] text-slate-500">
+                {shift ? shiftName(shift) : `shift ${gap.shift_id}`} · {gap.role}
+              </p>
+              <div className="border-t border-slate-100 pt-2">
+                {gap.candidates.length === 0 ? (
+                  <p className="text-slate-600">Nobody else works {gap.role}.</p>
+                ) : (
+                  <>
+                    <p className="mb-1 text-xs text-slate-500">Other {gap.role}s</p>
+                    <table className="w-full">
+                      <tbody>
+                        {groupByReason(gap.candidates, shifts).map(([label, names]) => (
+                          <tr key={label} className="align-top">
+                            <td className="w-44 py-0.5 pr-3 text-slate-500">{label}</td>
+                            <td className="py-0.5">{names.join(", ")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {explanation.together_only && (
+        <p className="mt-2 text-slate-600">
+          Each gap has someone free on their own, but not all at once.
+        </p>
+      )}
+      <div className="mt-3 flex gap-3">
+        {onCallOut && (
+          <button
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-100"
+            onClick={onCallOut}
+          >
+            Call out anyway
+          </button>
+        )}
+        <button className="px-2 py-1.5 text-slate-600 hover:underline" onClick={onClose}>
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Candidates grouped by a short reason, keeping the API's order. */
+function groupByReason(candidates: Candidate[], shifts: Shift[]): [string, string[]][] {
+  const groups = new Map<string, string[]>();
+  for (const candidate of candidates) {
+    const label = reasonLabel(candidate, shifts);
+    groups.set(label, [...(groups.get(label) ?? []), candidate.name]);
+  }
+  return [...groups.entries()];
+}
+
+function reasonLabel(candidate: Candidate, shifts: Shift[]): string {
+  const other = shifts.find((s) => s.id === candidate.other_shift_id);
+  const otherName = other ? shiftName(other) : "another shift";
+  switch (candidate.reason) {
+    case "on_shift":
+      return `On this shift as ${candidate.other_role}`;
+    case "busy":
+      return `Working ${otherName}`;
+    case "rest":
+      return `Needs rest (works ${otherName})`;
+    case "max_hours":
+      return "At max hours";
+    case "unavailable":
+      return "Not available";
+    default:
+      return "Free on their own";
+  }
 }
 
 function CalloutList({
@@ -700,12 +868,12 @@ function riskBackground(risk: CalloutRisk | undefined): string {
 function riskTitle(name: string, risk: CalloutRisk | undefined): string {
   if (!risk) return "Record a call-out";
   if (risk.level === "no_fix") {
-    return risk.reason ?? `If ${name} calls out, no repair keeps this week within its minimum staffing.`;
+    return `If ${name} calls out, nobody can replace them. Click for why.`;
   }
   if (risk.level === "short") {
-    return `If ${name} calls out, the best repair leaves ${risk.extra_missing} more position(s) short.`;
+    return `If ${name} calls out: leaves ${risk.extra_missing} position(s) short`;
   }
-  return `If ${name} calls out, it can be covered with ${risk.changes} change(s).`;
+  return `If ${name} calls out: covered with ${risk.changes} change(s)`;
 }
 
 // Small pieces

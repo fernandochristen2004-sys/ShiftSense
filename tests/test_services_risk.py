@@ -54,9 +54,10 @@ def test_every_assignment_is_checked(db, published):
     for risk in report.risks:
         if risk.level == "no_fix":
             assert risk.extra_missing is None and risk.changes is None
-            assert " is off " in risk.reason
+            assert " is off " in risk.why.summary
+            assert risk.why.explanation.gaps
         else:
-            assert risk.reason is None
+            assert risk.why is None
             assert risk.changes >= 1  # at least the called-out person comes off
             assert (risk.extra_missing > 0) == (risk.level == "short")
 
@@ -109,7 +110,7 @@ def test_an_unfixable_recorded_callout_is_reported_once(db, published):
 
     assert not after.week_fixable
     assert after.risks == []
-    assert after.blocker == no_fix.reason
+    assert after.blocker == no_fix.why
 
 
 def test_cancelling_the_callout_makes_the_week_fixable_again(db, published):

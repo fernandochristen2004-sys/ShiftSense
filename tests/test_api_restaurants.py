@@ -491,5 +491,9 @@ def test_failed_repair_explains_why(client, demo):
     body = client.post(_base(demo) + WEEK + "/repair", json={"deterministic": True}).json()
 
     assert body["schedule"] is None
-    assert body["explanation"] == no_fix["reason"]
-    assert no_fix["employee_name"] in body["explanation"]
+    assert body["explanation"] == no_fix["why"]
+    assert no_fix["employee_name"] in body["explanation"]["summary"]
+    gap = body["explanation"]["gaps"][0]
+    assert gap["called_out"][0]["name"] == no_fix["employee_name"]
+    assert gap["candidates"]
+    assert all(c["reason"] != "called_out" for c in gap["candidates"])

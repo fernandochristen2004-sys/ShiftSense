@@ -2,21 +2,24 @@
 
 When a repair fails, the solver only says "infeasible". This module looks at
 each slot the call-outs emptied and, for everyone who has the right skill,
-gives the first rule that keeps them out of it:
+finds the first rule that keeps them out of it. Reasons are structured (a
+short code plus details) so a dashboard can lay them out; `summarize` turns
+them into one sentence for logs and plain-text clients:
 
-    Omar is off Sat 28 17:00-23:00 (bartender).
-    Who else could work bartender: Jade (not available), Tharindu (working
-    Sat 28 23:00-02:00, too little rest).
+    Omar is off Sat 28 17:00-23:00 (bartender). Other bartenders:
+    Jade (on this shift as server), Ravi (not available),
+    Tharindu (needs rest around Sat 28 23:00-02:00).
 
-The reasons are judged against the current schedule, one person at a time.
-The solver can also move people around, so a person with no blocking reason
-is reported as "free". If every gap has someone free, the problem is the
-combination (they can't all be used at once), and the explanation says so.
+Reasons are judged against the current schedule, one person at a time. The
+solver can also move people around, so someone with no blocking reason is
+reported as free. If every gap has someone free, the problem is the
+combination (they can't all be used at once), and `together_only` says so.
 """
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import tzinfo
+from typing import Literal
 
 from optimizer.models import DateTimeShift, Employee, FixedAssignment, SchedulingPolicy
 from optimizer.timeutils import (
@@ -28,14 +31,24 @@ from optimizer.timeutils import (
 
 Schedule = Mapping[int, Mapping[str, Iterable[int]]]  # shift_id -> role -> employee ids
 
+# In the order a manager can most easily act on them.
+Reason = Literal["on_shift", "busy", "rest", "max_hours", "unavailable", "called_out"]
+REASON_ORDER: tuple[Reason, ...] = (
+    "on_shift", "busy", "rest", "max_hours", "unavailable", "called_out",
+)
+
 
 @dataclass(frozen=True)
 class Candidate:
-    """Someone with the right skill, and why they can't take the slot."""
+    """Someone with the right skill, and what keeps them out of the slot."""
 
     employee_id: int
     name: str
-    reason: str | None  # None: nothing obvious stops them
+    reason: Reason | None  # None: nothing obvious stops them
+    other_shift_id: int | None = None  # busy / rest: the shift in the way
+    other_role: str | None = None      # on_shift: the role they already have
+    worked_minutes: int | None = None  # max_hours: minutes already scheduled
+    max_hours: int | None = None       # max_hours: their limit
 
 
 @dataclass(frozen=True)
@@ -50,6 +63,17 @@ class Gap:
     @property
     def anyone_free(self) -> bool:
         return any(candidate.reason is None for candidate in self.candidates)
+
+
+@dataclass(frozen=True)
+class Explanation:
+    gaps: tuple[Gap, ...]
+    together_only: bool  # every gap has someone free, just not all at once
+
+    @property
+    def blocking(self) -> tuple[Gap, ...]:
+        """The gaps nobody can fill; all gaps when it's the combination."""
+        return tuple(gap for gap in self.gaps if not gap.anyone_free) or self.gaps
 
 
 def shift_label(shift: DateTimeShift, scheduling_timezone: tzinfo) -> str:
@@ -67,7 +91,7 @@ def explain_gaps(
     excluded_assignments: Mapping[int, Iterable[int]],
     scheduling_timezone: tzinfo,
     outside_assignments: Iterable[FixedAssignment] = (),
-) -> list[Gap]:
+) -> Explanation:
     """Explain each slot the excluded people leave empty, in shift order."""
     employees_by_id = {employee.id: employee for employee in employees}
     shifts_by_id = {shift.id: shift for shift in shifts}
@@ -91,40 +115,41 @@ def explain_gaps(
             if not removed:
                 continue
             candidates = tuple(
-                Candidate(
-                    employee.id,
-                    employee.name,
-                    _reason(
-                        employee, shift, working.get(employee.id, []), excluded,
-                        policy, scheduling_timezone,
-                    ),
+                _candidate(
+                    employee, shift, working.get(employee.id, []), excluded,
+                    policy, scheduling_timezone,
                 )
                 for employee in sorted(employees_by_id.values(), key=lambda e: e.name)
                 if role in employee.skills and employee.id not in removed
             )
             gaps.append(Gap(shift_id, role, removed, candidates))
-    return gaps
+
+    gaps = tuple(gaps)
+    return Explanation(gaps, together_only=bool(gaps) and all(g.anyone_free for g in gaps))
 
 
-def _reason(
+def _candidate(
     employee: Employee,
     shift: DateTimeShift,
     working: list[tuple[DateTimeShift, str]],
     excluded: Mapping[int, set[int]],
     policy: SchedulingPolicy,
     scheduling_timezone: tzinfo,
-) -> str | None:
-    """The first rule that keeps this person out of the shift, or None."""
+) -> Candidate:
+    """This person, with the first rule that keeps them out of the shift."""
+    def blocked(reason: Reason, **details) -> Candidate:
+        return Candidate(employee.id, employee.name, reason, **details)
+
     if employee.id in excluded.get(shift.id, set()):
-        return "called out"
+        return blocked("called_out")
     for other, role in working:
         if other.id == shift.id:
-            return f"already on this shift as {role}"
+            return blocked("on_shift", other_role=role)
     if not employee_is_available(employee, shift, scheduling_timezone):
-        return "not available"
+        return blocked("unavailable")
     for other, _ in working:
         if datetime_shifts_overlap(shift, other):
-            return f"working {shift_label(other, scheduling_timezone)}"
+            return blocked("busy", other_shift_id=other.id)
     if policy.enforce_minimum_rest:
         for other, _ in working:
             if datetime_shifts_violate_rest_policy(
@@ -135,34 +160,63 @@ def _reason(
                 split_shift_min_break_minutes=policy.split_shift_min_break_minutes,
                 max_split_span_minutes=policy.max_split_span_minutes,
             ):
-                return f"too little rest around {shift_label(other, scheduling_timezone)}"
+                return blocked("rest", other_shift_id=other.id)
     worked = sum(shift_duration_minutes(other) for other, _ in working)
     if worked + shift_duration_minutes(shift) > employee.max_hours * 60:
-        return f"would go over {employee.max_hours} h (already {worked / 60:g} h)"
-    return None
+        return blocked("max_hours", worked_minutes=worked, max_hours=employee.max_hours)
+    return Candidate(employee.id, employee.name, None)
 
 
-def summarize(gaps: list[Gap], scheduling_timezone: tzinfo, shifts: Iterable[DateTimeShift],
-              names: Mapping[int, str]) -> str:
-    """One readable paragraph for a manager."""
+def reason_text(
+    candidate: Candidate,
+    shifts_by_id: Mapping[int, DateTimeShift],
+    scheduling_timezone: tzinfo,
+) -> str:
+    """A few words: 'not available', 'needs rest around Sat 28 23:00-02:00'."""
+    def other() -> str:
+        shift = shifts_by_id.get(candidate.other_shift_id)
+        return shift_label(shift, scheduling_timezone) if shift else "another shift"
+
+    match candidate.reason:
+        case None:
+            return "free"
+        case "called_out":
+            return "called out"
+        case "on_shift":
+            return f"on this shift as {candidate.other_role}"
+        case "unavailable":
+            return "not available"
+        case "busy":
+            return f"working {other()}"
+        case "rest":
+            return f"needs rest around {other()}"
+        case "max_hours":
+            return f"at max hours ({candidate.worked_minutes / 60:g} of {candidate.max_hours} h)"
+
+
+def summarize(
+    explanation: Explanation,
+    shifts: Iterable[DateTimeShift],
+    scheduling_timezone: tzinfo,
+    names: Mapping[int, str],
+) -> str:
+    """One sentence per blocking gap, for logs and plain-text clients."""
     shifts_by_id = {shift.id: shift for shift in shifts}
-    blocking = [gap for gap in gaps if not gap.anyone_free] or gaps
     parts = []
-    for gap in blocking:
+    for gap in explanation.blocking:
         who = ", ".join(names.get(e, f"#{e}") for e in gap.called_out)
         where = shift_label(shifts_by_id[gap.shift_id], scheduling_timezone)
-        others = [c for c in gap.candidates if c.reason != "called out"]
+        others = sorted(
+            (c for c in gap.candidates if c.reason != "called_out"),
+            key=lambda c: (REASON_ORDER.index(c.reason) if c.reason else -1, c.name),
+        )
         if not others:
             parts.append(f"{who} is off {where} ({gap.role}), and nobody else works {gap.role}.")
             continue
         listed = ", ".join(
-            f"{c.name} ({c.reason or 'free'})" for c in others
+            f"{c.name} ({reason_text(c, shifts_by_id, scheduling_timezone)})" for c in others
         )
-        parts.append(
-            f"{who} is off {where} ({gap.role}). Who else works {gap.role}: {listed}."
-        )
-    if all(gap.anyone_free for gap in gaps):
-        parts.append(
-            "Each gap has someone free on its own, but not all at once without breaking a rule."
-        )
+        parts.append(f"{who} is off {where} ({gap.role}). Other {gap.role}s: {listed}.")
+    if explanation.together_only:
+        parts.append("Each gap has someone free on its own, but not all at once.")
     return " ".join(parts)

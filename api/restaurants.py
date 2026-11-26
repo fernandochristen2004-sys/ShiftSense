@@ -29,7 +29,11 @@ from api.stored_schemas import (
     CalloutOut,
     CalloutRiskOut,
     DraftRequest,
+    CandidateOut,
     DraftResponse,
+    ExplanationOut,
+    GapOut,
+    PersonOut,
     PublishRequest,
     RequirementOut,
     RestaurantOut,
@@ -42,7 +46,8 @@ from api.stored_schemas import (
 )
 from db import models as db
 from services.loading import load_restaurant
-from services.explanations import explain_recorded_callouts
+from optimizer.explain import REASON_ORDER
+from services.explanations import CalloutExplanation, explain_recorded_callouts
 from services.risk import callout_risk
 from services.scheduling import (
     DraftOutcome,
@@ -163,6 +168,50 @@ def _callout_out(absence: db.Absence) -> CalloutOut:
         rest_of_day=absence.rest_of_day,
         note=absence.note,
         reported_at=absence.reported_at,
+    )
+
+
+def _employee_names(session: Session, restaurant_id: int) -> dict[int, str]:
+    return dict(session.execute(
+        select(db.Employee.id, db.Employee.display_name)
+        .where(db.Employee.restaurant_id == restaurant_id)
+    ).all())
+
+
+def _explanation_out(explained: CalloutExplanation | None, names: dict[int, str]):
+    if explained is None:
+        return None
+
+    def order(candidate):
+        rank = REASON_ORDER.index(candidate.reason) if candidate.reason else -1
+        return rank, candidate.name
+
+    return ExplanationOut(
+        summary=explained.summary,
+        together_only=explained.explanation.together_only,
+        gaps=[
+            GapOut(
+                shift_id=gap.shift_id,
+                role=gap.role,
+                called_out=[
+                    PersonOut(employee_id=e, name=names.get(e, f"#{e}")) for e in gap.called_out
+                ],
+                candidates=[
+                    CandidateOut(
+                        employee_id=c.employee_id,
+                        name=c.name,
+                        reason=c.reason,
+                        other_shift_id=c.other_shift_id,
+                        other_role=c.other_role,
+                        worked_hours=None if c.worked_minutes is None else c.worked_minutes / 60,
+                        max_hours=c.max_hours,
+                    )
+                    for c in sorted(gap.candidates, key=order)
+                    if c.reason != "called_out"
+                ],
+            )
+            for gap in explained.explanation.blocking
+        ],
     )
 
 
@@ -426,7 +475,10 @@ def repair_week(
         outcome = repair_published(session, restaurant_id, week_start, request.deterministic)
         response = _draft_response(session, outcome)
         if outcome.schedule is None:
-            response.explanation = explain_recorded_callouts(session, restaurant_id, week_start)
+            response.explanation = _explanation_out(
+                explain_recorded_callouts(session, restaurant_id, week_start),
+                _employee_names(session, restaurant_id),
+            )
     session.commit()
     return response
 
@@ -445,14 +497,11 @@ def get_callout_risk(
     with _service_errors():
         report = callout_risk(session, restaurant_id, week_start)
 
-    names = dict(session.execute(
-        select(db.Employee.id, db.Employee.display_name)
-        .where(db.Employee.restaurant_id == restaurant_id)
-    ).all())
+    names = _employee_names(session, restaurant_id)
     return RiskReportOut(
         schedule_id=report.schedule_id,
         week_fixable=report.week_fixable,
-        blocker=report.blocker,
+        blocker=_explanation_out(report.blocker, names),
         baseline_missing=report.baseline_missing,
         checked=len(report.risks),
         at_risk=len(report.at_risk),
@@ -465,7 +514,7 @@ def get_callout_risk(
                 level=risk.level,
                 extra_missing=risk.extra_missing,
                 changes=risk.changes,
-                reason=risk.reason,
+                why=_explanation_out(risk.why, names),
             )
             for risk in report.risks
         ],

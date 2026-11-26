@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from optimizer import engine
 from optimizer.models import ScheduleResult
 from services.callouts import exclusions_for_callouts, merge_exclusions
-from services.explanations import explain_exclusions
+from services.explanations import CalloutExplanation, explain_exclusions
 from services.loading import WeekInputs, load_restaurant, load_week
 from services.scheduling import current_published, full_original_schedule, week_callouts
 from services.weeks import week_bounds
@@ -39,7 +39,7 @@ class CalloutRisk:
     level: RiskLevel
     extra_missing: int | None  # positions left unfilled; None when no repair exists
     changes: int | None        # changes the repair needs; None when no repair exists
-    reason: str | None = None  # why no repair exists (no_fix only)
+    why: CalloutExplanation | None = None  # why no repair exists (no_fix only)
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ class RiskReport:
     baseline_missing: int  # positions already short before any new call-out
     risks: list[CalloutRisk]
     week_fixable: bool = True  # False: recorded call-outs already can't be repaired
-    blocker: str | None = None  # why, when week_fixable is False
+    blocker: CalloutExplanation | None = None  # why, when week_fixable is False
 
     @property
     def at_risk(self) -> list[CalloutRisk]:
@@ -135,10 +135,10 @@ def callout_risk(
     risks = []
     for (shift_id, role, employee_id), result in zip(candidates, results):
         if result.assignments is None:
-            reason = explain_exclusions(
+            why = explain_exclusions(
                 inputs, original, excluded_with((shift_id, role, employee_id))
             )
-            risks.append(CalloutRisk(shift_id, employee_id, role, "no_fix", None, None, reason))
+            risks.append(CalloutRisk(shift_id, employee_id, role, "no_fix", None, None, why))
             continue
         extra = max(0, _missing(result) - baseline_missing)
         risks.append(CalloutRisk(

@@ -1,25 +1,36 @@
-"""Plain-language reasons why call-outs can't be covered (see optimizer/explain.py)."""
+"""Why call-outs can't be covered: structured reasons plus a one-line summary.
+
+The reasoning lives in optimizer/explain.py; this module loads the week and
+packages the result for the API.
+"""
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from optimizer.explain import explain_gaps, summarize
+from optimizer.explain import Explanation, explain_gaps, summarize
 from services.callouts import exclusions_for_callouts
 from services.loading import WeekInputs, load_restaurant, load_week
 from services.scheduling import current_published, full_original_schedule, week_callouts
 from services.weeks import week_bounds
 
 
+@dataclass(frozen=True)
+class CalloutExplanation:
+    explanation: Explanation
+    summary: str  # one plain sentence per blocking gap
+
+
 def explain_exclusions(
     inputs: WeekInputs,
     original: Mapping[int, Mapping[str, Iterable[int]]],
     excluded: Mapping[int, Iterable[int]],
-) -> str:
-    """Why the gaps these exclusions leave can't be filled, in one paragraph."""
-    gaps = explain_gaps(
+) -> CalloutExplanation:
+    """Why the gaps these exclusions leave can't be filled."""
+    explanation = explain_gaps(
         inputs.employees,
         inputs.shifts,
         inputs.policy,
@@ -29,10 +40,14 @@ def explain_exclusions(
         inputs.outside_assignments,
     )
     names = {employee.id: employee.name for employee in inputs.employees}
-    return summarize(gaps, inputs.timezone, inputs.shifts, names)
+    return CalloutExplanation(
+        explanation, summarize(explanation, inputs.shifts, inputs.timezone, names)
+    )
 
 
-def explain_recorded_callouts(session: Session, restaurant_id: int, week_start: date) -> str | None:
+def explain_recorded_callouts(
+    session: Session, restaurant_id: int, week_start: date
+) -> CalloutExplanation | None:
     """Why the week's recorded call-outs can't all be covered.
 
     None when nothing is published or no call-outs are recorded.

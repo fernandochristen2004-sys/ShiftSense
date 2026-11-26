@@ -66,6 +66,42 @@ class ScheduleDetail(ScheduleSummary):
     schedule_metrics: dict[str, int | float]
 
 
+class PersonOut(ApiModel):
+    employee_id: int
+    name: str
+
+
+class CandidateOut(ApiModel):
+    """Someone with the right skill, and what keeps them out of the gap."""
+
+    employee_id: int
+    name: str
+    reason: str | None = Field(
+        description="on_shift, busy, rest, max_hours, unavailable, called_out; null = free",
+    )
+    other_shift_id: int | None = Field(description="busy / rest: the shift in the way")
+    other_role: str | None = Field(description="on_shift: the role they already have")
+    worked_hours: float | None = Field(description="max_hours: hours already scheduled")
+    max_hours: int | None = Field(description="max_hours: their limit")
+
+
+class GapOut(ApiModel):
+    shift_id: int
+    role: str
+    called_out: list[PersonOut]
+    candidates: list[CandidateOut] = Field(description="Ordered: easiest to act on first")
+
+
+class ExplanationOut(ApiModel):
+    """Why call-outs can't be covered."""
+
+    summary: str = Field(description="The same, as plain sentences")
+    together_only: bool = Field(
+        description="Every gap has someone free on its own, just not all at once",
+    )
+    gaps: list[GapOut] = Field(description="The gaps nobody can fill")
+
+
 class DraftResponse(ApiModel):
     """The engine's outcome and, if a schedule was found, the saved draft."""
 
@@ -73,7 +109,7 @@ class DraftResponse(ApiModel):
     conflicts: list[str]
     stage_statuses: dict[str, str]
     schedule: ScheduleDetail | None = Field(description="null when nothing was saved")
-    explanation: str | None = Field(
+    explanation: ExplanationOut | None = Field(
         default=None, description="Repairs only: why the call-outs can't be covered",
     )
 
@@ -122,7 +158,7 @@ class CalloutRiskOut(ApiModel):
     level: str = Field(description="covered, short (positions left unfilled) or no_fix")
     extra_missing: int | None = Field(description="Positions left unfilled; null when no fix exists")
     changes: int | None = Field(description="Changes the repair needs; null when no fix exists")
-    reason: str | None = Field(description="Why no repair exists (no_fix only)")
+    why: ExplanationOut | None = Field(description="Why no repair exists (no_fix only)")
 
 
 class RiskReportOut(ApiModel):
@@ -130,7 +166,9 @@ class RiskReportOut(ApiModel):
     week_fixable: bool = Field(
         description="False when call-outs already recorded can't be repaired; risks is then empty",
     )
-    blocker: str | None = Field(description="Why the week can't be fixed, when week_fixable is false")
+    blocker: ExplanationOut | None = Field(
+        description="Why the week can't be fixed, when week_fixable is false",
+    )
     baseline_missing: int = Field(description="Positions already short before any new call-out")
     checked: int = Field(description="Assignments simulated")
     at_risk: int = Field(description="Call-outs that would leave the week worse off")
