@@ -408,7 +408,7 @@ def test_dashboard_origin_is_allowed(client):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
-@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+@pytest.mark.parametrize("method", ["GET", "POST", "PATCH", "PUT", "DELETE"])
 def test_dashboard_can_use_every_method_the_api_has(client, method):
     response = client.options(
         "/restaurants/1/callouts/1",

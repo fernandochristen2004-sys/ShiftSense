@@ -19,6 +19,7 @@ from api.schemas import (
     ScheduleResponse,
 )
 from api.restaurants import router as restaurants_router
+from api.staff import router as staff_router
 from optimizer import engine
 
 app = FastAPI(title="ShiftSense API", version="0.1.0")
@@ -32,10 +33,11 @@ CORS_ORIGINS = os.environ.get(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in CORS_ORIGINS if origin.strip()],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["Content-Type"],
 )
 app.include_router(restaurants_router)
+app.include_router(staff_router)
 
 
 class HealthResponse(BaseModel):

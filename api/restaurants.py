@@ -1,29 +1,19 @@
 """Endpoints that work with a restaurant's stored data.
 
 The flagship flow: generate a draft → publish it → record a call-out →
-repair the week → publish the repair.
-
-Errors come back as {"detail": {"code": ..., "message": ...}} so a
-dashboard can react to the code:
-    404 not_found               restaurant, schedule or shift doesn't exist
-    409 stale                   someone changed the schedule; reload
-    409 shortages_not_accepted  ask the manager to confirm, then resend
-    422 invalid                 the request breaks a rule
+repair the week → publish the repair. Error codes are listed in api/errors.py.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import date
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.exc import StaleDataError
 
 from api.convert import schedule_changes
 from api.deps import get_session
+from api.errors import service_errors
 from api.schemas import ShortageOut
 from api.stored_schemas import (
     CalloutOut,
@@ -56,8 +46,6 @@ from services.options import repair_options
 from services.risk import callout_risk
 from services.scheduling import (
     DraftOutcome,
-    ShortagesNotAcceptedError,
-    StaleScheduleError,
     cancel_absence,
     current_published,
     generate_draft,
@@ -68,32 +56,6 @@ from services.scheduling import (
 from services.weeks import week_bounds
 
 router = APIRouter(prefix="/restaurants", tags=["restaurants"])
-
-
-# Errors
-
-def _error(status_code: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
-
-
-@contextmanager
-def _service_errors() -> Iterator[None]:
-    """Turn service exceptions into HTTP errors. Order matters: specific first."""
-    try:
-        yield
-    except LookupError as error:
-        raise _error(404, "not_found", str(error)) from error
-    except ShortagesNotAcceptedError as error:
-        raise _error(409, "shortages_not_accepted", str(error)) from error
-    except StaleScheduleError as error:
-        raise _error(409, "stale", str(error)) from error
-    except (StaleDataError, IntegrityError) as error:
-        # Another request changed or published this week at the same moment.
-        raise _error(
-            409, "stale", "The schedule was changed by someone else. Reload and try again."
-        ) from error
-    except ValueError as error:
-        raise _error(422, "invalid", str(error)) from error
 
 
 # Building responses
@@ -253,7 +215,7 @@ def get_restaurant(
     restaurant_id: int,
     session: Session = Depends(get_session),
 ) -> RestaurantOut:
-    with _service_errors():
+    with service_errors():
         return _restaurant_out(load_restaurant(session, restaurant_id))
 
 
@@ -264,7 +226,7 @@ def list_shifts(
     session: Session = Depends(get_session),
 ) -> list[ShiftOut]:
     """Active shifts starting in the week, in order, with local times and roles."""
-    with _service_errors():
+    with service_errors():
         restaurant = load_restaurant(session, restaurant_id)
         period_start, period_end = week_bounds(week_start, ZoneInfo(restaurant.timezone))
     local = ZoneInfo(restaurant.timezone)
@@ -324,7 +286,7 @@ def create_draft(
     An impossible week is not an error: it returns 200 with status
     INFEASIBLE and `schedule: null`, and nothing is saved.
     """
-    with _service_errors():
+    with service_errors():
         outcome = generate_draft(session, restaurant_id, week_start, request.deterministic)
         response = _draft_response(session, outcome)
     session.commit()
@@ -338,7 +300,7 @@ def list_schedules(
     session: Session = Depends(get_session),
 ) -> list[ScheduleSummary]:
     """Every revision of a week, newest first."""
-    with _service_errors():
+    with service_errors():
         period_start, _ = _restaurant_week(session, restaurant_id, week_start)
 
     schedules = session.scalars(
@@ -359,7 +321,7 @@ def get_published(
     session: Session = Depends(get_session),
 ) -> ScheduleDetail:
     """The week's live schedule. 404 if nothing is published yet."""
-    with _service_errors():
+    with service_errors():
         period_start, _ = _restaurant_week(session, restaurant_id, week_start)
         published = current_published(session, restaurant_id, period_start)
         if published is None:
@@ -374,7 +336,7 @@ def get_schedule(
     session: Session = Depends(get_session),
 ) -> ScheduleDetail:
     """One revision with its assignments and, for repairs, what changed."""
-    with _service_errors():
+    with service_errors():
         schedule = _schedule(session, restaurant_id, schedule_id)
     return _detail(session, schedule)
 
@@ -387,7 +349,7 @@ def publish(
     session: Session = Depends(get_session),
 ) -> ScheduleDetail:
     """Publish a draft. The week's previous published revision is archived."""
-    with _service_errors():
+    with service_errors():
         _schedule(session, restaurant_id, schedule_id)
         schedule = publish_schedule(
             session,
@@ -413,7 +375,7 @@ def create_callout(
 
     This only records it. Call /weeks/{week_start}/repair to find cover.
     """
-    with _service_errors():
+    with service_errors():
         absence = record_absence(
             session,
             restaurant_id,
@@ -434,7 +396,7 @@ def list_callouts(
     session: Session = Depends(get_session),
 ) -> list[CalloutOut]:
     """Call-outs for shifts starting in the week, oldest first."""
-    with _service_errors():
+    with service_errors():
         period_start, period_end = _restaurant_week(session, restaurant_id, week_start)
 
     absences = session.scalars(
@@ -459,7 +421,7 @@ def delete_callout(
     session: Session = Depends(get_session),
 ) -> None:
     """Cancel a recorded call-out. Repairs from now on ignore it."""
-    with _service_errors():
+    with service_errors():
         cancel_absence(session, restaurant_id, callout_id)
         session.commit()
 
@@ -479,7 +441,7 @@ def get_repair_options(
     room the cover has under their max hours. To use one, call /repair with
     its `cover` and `deterministic: true`.
     """
-    with _service_errors():
+    with service_errors():
         report = repair_options(
             session, restaurant_id, week_start, request.shift_id, request.employee_id
         )
@@ -543,7 +505,7 @@ def repair_week(
     Pass `cover` (from /repair-options) to save that option.
     """
     cover = request.cover
-    with _service_errors():
+    with service_errors():
         outcome = repair_published(
             session, restaurant_id, week_start, request.deterministic,
             cover=(cover.shift_id, cover.role, cover.employee_id) if cover else None,
@@ -569,7 +531,7 @@ def get_callout_risk(
     Simulates a call-out for every assignment in the published week and runs
     a repair for each. Takes a few seconds; nothing is saved.
     """
-    with _service_errors():
+    with service_errors():
         report = callout_risk(session, restaurant_id, week_start)
 
     names = _employee_names(session, restaurant_id)

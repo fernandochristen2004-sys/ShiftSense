@@ -313,11 +313,21 @@ def full_original_schedule(
     schedule_id: int,
     inputs: WeekInputs,
 ) -> dict[int, dict[str, list[int]]]:
-    """A saved revision in the engine's repair format: every shift and role."""
+    """A saved revision in the engine's repair format: every shift and role.
+
+    Staff can change after publishing. Anyone who is now inactive, or no
+    longer has the role, is left out, so the repair fills their place (and
+    the saved repair lists them as taken off).
+    """
     saved = schedule_assignments(session, schedule_id)
+    skills = {employee.id: employee.skills for employee in inputs.employees}
     return {
         shift.id: {
-            requirement.skill: list(saved.get(shift.id, {}).get(requirement.skill, []))
+            requirement.skill: [
+                employee_id
+                for employee_id in saved.get(shift.id, {}).get(requirement.skill, [])
+                if requirement.skill in skills.get(employee_id, ())
+            ]
             for requirement in shift.requirements
         }
         for shift in inputs.shifts
