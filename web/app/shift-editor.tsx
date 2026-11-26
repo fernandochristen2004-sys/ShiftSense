@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { api, ApiError, type Shift, type ShiftIn, type Skill } from "@/lib/api";
-import { addDays, formatDay, hhmm } from "@/lib/dates";
+import { addDays, describeWindow, formatDay, hhmm, LONG_HOURS } from "@/lib/dates";
 
 type Need = { role: string; count: string; min_count: string };
 
@@ -77,8 +77,12 @@ export function ShiftEditor({
     }
   }
 
-  const save = () =>
-    run(async () => {
+  const save = () => {
+    if (needs.length === 0 || needs.some((n) => !n.role)) {
+      setError("Pick a role on every row of People needed.");
+      return;
+    }
+    return run(async () => {
       if (shift) {
         // Send only what changed: a published shift can still be renamed.
         const next = body();
@@ -97,6 +101,7 @@ export function ShiftEditor({
       await api.addShift(restaurantId, body());
       return "Shift added. Update the schedule to staff it.";
     });
+  };
 
   const remove = () =>
     run(async () => {
@@ -157,9 +162,7 @@ export function ShiftEditor({
           />
         </Field>
       </div>
-      <p className="mt-1 text-xs text-slate-500">
-        An end earlier than the start finishes the next day.
-      </p>
+      <ShiftLength date={form.local_date} start={form.start_time} end={form.end_time} />
 
       <div className="mt-4">
         <div className="mb-1 text-slate-600">
@@ -238,6 +241,21 @@ export function ShiftEditor({
         )}
       </div>
     </div>
+  );
+}
+
+/** "Tue 07:00 → 11:00 · 4 h" under the times; red when the API would refuse it. */
+function ShiftLength({ date, start, end }: { date: string; start: string; end: string }) {
+  const weekday = (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7; // Monday = 0
+  const window = describeWindow(start, end, weekday);
+  if (!window) return null;
+  const tooLong = window.hours === 0 || window.hours > LONG_HOURS;
+  return (
+    <p className={`mt-1 text-xs ${tooLong ? "text-red-700" : "text-slate-500"}`}>
+      {window.text}
+      {window.overnight && !tooLong && " (ends the next day)"}
+      {window.hours > LONG_HOURS && `. Shifts can be at most ${LONG_HOURS} hours: check AM and PM.`}
+    </p>
   );
 }
 

@@ -140,7 +140,11 @@ export type DraftResult = {
   conflicts: string[];
   schedule: Schedule | null;
   explanation: Explanation | null; // why the call-outs can't be covered
+  blockers: Blocker[]; // when nothing was found: shift roles too few people can work
 };
+
+/** A shift role that can't reach its minimum. */
+export type Blocker = { shift_id: number; role: string; needed: number; available: number };
 
 export type CalloutRisk = {
   shift_id: number;

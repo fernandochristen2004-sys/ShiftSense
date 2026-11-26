@@ -6,6 +6,7 @@ import {
   api,
   ApiError,
   type Assignment,
+  type Blocker,
   type Callout,
   type CalloutRisk,
   type Candidate,
@@ -17,7 +18,7 @@ import {
   type Schedule,
   type Shift,
 } from "@/lib/api";
-import { addDays, formatDate, formatDay } from "@/lib/dates";
+import { addDays, formatDate, formatDay, hhmm } from "@/lib/dates";
 
 import { ShiftEditor } from "./shift-editor";
 import { StaffPage } from "./staff";
@@ -271,15 +272,18 @@ export function Dashboard() {
         ? await api.draft(restaurantId, week)
         : await api.repair(restaurantId, week);
       if (!result.schedule) {
-        if (result.explanation) {
+        if (result.blockers.length > 0) {
+          setError(blockerMessage(result.blockers, data.shifts));
+        } else if (result.explanation) {
           setWhy({
             explanation: result.explanation,
             title: "No schedule possible with the current call-outs",
           });
         } else {
           setError(
-            "No schedule is possible. Usually a required role on some shift has nobody available: " +
-              "check the shift's minimums and the staff's weekly hours.",
+            "No schedule is possible. Every shift has enough people on paper, so it's a mix of " +
+              "rules (max hours, rest between shifts): try lowering a shift's minimum or " +
+              "giving staff more hours.",
           );
         }
         return;
@@ -1357,6 +1361,27 @@ function nameLookup(...schedules: Schedule[]): Map<number, string> {
     for (const a of schedule.assignments) names.set(a.employee_id, a.employee_name);
   }
   return names;
+}
+
+/** "No schedule is possible: Tue 24 breakfast (07:00–11:00) needs 1 server, but nobody … */
+function blockerMessage(blockers: Blocker[], shifts: Shift[]): string {
+  const byId = new Map(shifts.map((s) => [s.id, s]));
+  const parts = blockers.slice(0, 3).map((b) => {
+    const shift = byId.get(b.shift_id);
+    const where = shift
+      ? `${shiftName(shift)} (${hhmm(shift.local_start)}–${hhmm(shift.local_end)})`
+      : "A shift";
+    const free =
+      b.available === 0
+        ? `nobody with that role is free then`
+        : `only ${b.available} ${b.available === 1 ? "is" : "are"} free then`;
+    return `${where} needs ${b.needed} ${b.role}${b.needed === 1 ? "" : "s"}, but ${free}`;
+  });
+  const more = blockers.length > 3 ? ` (and ${blockers.length - 3} more)` : "";
+  return (
+    `No schedule is possible. ${parts.join("; ")}${more}. ` +
+    "Give someone with that role hours that cover the shift (Staff tab), or lower the shift's minimum."
+  );
 }
 
 function shiftName(shift: Shift): string {

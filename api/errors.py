@@ -12,7 +12,9 @@ dashboard can react to the code:
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -44,3 +46,17 @@ def service_errors() -> Iterator[None]:
         ) from exc
     except ValueError as exc:
         raise error(422, "invalid", str(exc)) from exc
+
+
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Badly formed requests get the same {code, message} shape as every other error.
+
+    FastAPI's default is a list of raw validation details, which a dashboard
+    can't show to a person. This keeps the first problem, in words.
+    """
+    first = exc.errors()[0] if exc.errors() else {}
+    where = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
+    message = first.get("msg", "Invalid request.")
+    if where:
+        message = f"{where}: {message}"
+    return JSONResponse(status_code=422, content={"detail": {"code": "invalid", "message": message}})

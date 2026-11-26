@@ -123,6 +123,21 @@ def test_a_shift_needs_people(client, base, requirements):
     assert response.status_code == 422
 
 
+def test_badly_formed_requests_get_a_readable_message(client, base):
+    # FastAPI's own checks (like an empty role) use the same {code, message}
+    # shape as every other error, so the dashboard can show it.
+    response = client.post(
+        base + "/shifts", json={**BREAKFAST, "requirements": [{"role": "", "count": 1}]},
+    )
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": {
+            "code": "invalid",
+            "message": "requirements.0.role: String should have at least 1 character",
+        }
+    }
+
+
 OPTIONAL = [{"role": "cook", "count": 1, "min_count": 0}, {"role": "server", "count": 1, "min_count": 0}]
 
 
@@ -144,10 +159,51 @@ def test_a_shift_added_after_publishing_is_filled_by_a_repair(client, base):
 def test_a_required_shift_nobody_can_work_makes_the_week_infeasible(client, base):
     # Nobody in the demo is available before 10:00, so a required 07:00 cook
     # can't be found. The engine says so instead of quietly skipping the shift.
-    _add(client, base)
+    shift = _add(client, base)
     draft = client.post(base + WEEK + "/drafts", json={"deterministic": True}).json()
     assert draft["status"] == "INFEASIBLE"
     assert draft["schedule"] is None
+
+    # ...and the response names the shift and roles nobody can work.
+    assert draft["blockers"] == [
+        {"shift_id": shift["id"], "role": "cook", "needed": 1, "available": 0},
+        {"shift_id": shift["id"], "role": "server", "needed": 1, "available": 0},
+    ]
+
+
+def test_a_week_that_works_has_no_blockers(client, base):
+    _add(client, base, requirements=OPTIONAL)
+    draft = client.post(base + WEEK + "/drafts", json={"deterministic": True}).json()
+    assert draft["schedule"] is not None
+    assert draft["blockers"] == []
+
+
+def test_a_call_out_can_leave_a_shift_with_nobody(client, base):
+    # A sommelier role only Noor has, on a Tuesday evening she's free for.
+    client.post(base + "/skills", json={"name": "sommelier"})
+    noor = client.post(
+        base + "/employees",
+        json={"display_name": "Noor", "max_hours": 30, "skills": ["sommelier"]},
+    ).json()["id"]
+    client.put(
+        base + f"/employees/{noor}/availability/weekly",
+        json={"rules": [{"weekday": 1, "start_time": "16:00", "end_time": "23:30"}]},
+    )
+    tasting = _add(
+        client, base, start_time="18:00", end_time="21:00", label="Tasting",
+        requirements=[{"role": "sommelier", "count": 1}],
+    )
+    published = _publish_draft(client, base)
+    assert {"shift_id": tasting["id"], "employee_id": noor, "role": "sommelier"} in [
+        {k: a[k] for k in ("shift_id", "employee_id", "role")} for a in published["assignments"]
+    ]
+
+    client.post(base + "/callouts", json={"shift_id": tasting["id"], "employee_id": noor})
+    repair = client.post(base + WEEK + "/repair", json={"deterministic": True}).json()
+    assert repair["schedule"] is None
+    assert repair["blockers"] == [
+        {"shift_id": tasting["id"], "role": "sommelier", "needed": 1, "available": 0},
+    ]
 
 
 # Editing

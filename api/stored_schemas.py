@@ -124,6 +124,15 @@ class ExplanationOut(ApiModel):
     gaps: list[GapOut] = Field(description="The gaps nobody can fill")
 
 
+class BlockerOut(ApiModel):
+    """A shift role that can't reach its minimum: too few people could work it."""
+
+    shift_id: int
+    role: str
+    needed: int = Field(description="The shift's minimum for this role")
+    available: int = Field(description="People with the role who are free for the whole shift")
+
+
 class DraftResponse(ApiModel):
     """The engine's outcome and, if a schedule was found, the saved draft."""
 
@@ -133,6 +142,10 @@ class DraftResponse(ApiModel):
     schedule: ScheduleDetail | None = Field(description="null when nothing was saved")
     explanation: ExplanationOut | None = Field(
         default=None, description="Repairs only: why the call-outs can't be covered",
+    )
+    blockers: list[BlockerOut] = Field(
+        default_factory=list,
+        description="When nothing was found: shift roles too few people can work",
     )
 
 

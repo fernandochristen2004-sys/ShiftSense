@@ -16,6 +16,7 @@ from api.deps import get_session
 from api.errors import service_errors
 from api.schemas import ShortageOut
 from api.stored_schemas import (
+    BlockerOut,
     CalloutOut,
     CalloutRiskOut,
     DraftRequest,
@@ -40,6 +41,7 @@ from db import models as db
 from services.loading import load_restaurant
 from optimizer.explain import REASON_ORDER
 from services.explanations import CalloutExplanation, explain_recorded_callouts
+from services.feasibility import Blocker, week_blockers
 from services.options import repair_options
 from services.risk import callout_risk
 from services.scheduling import (
@@ -123,6 +125,13 @@ def _draft_response(session: Session, outcome: DraftOutcome) -> DraftResponse:
         stage_statuses=dict(result.stage_statuses or {}),
         schedule=_detail(session, outcome.schedule) if outcome.schedule else None,
     )
+
+
+def _blockers_out(blockers: list[Blocker]) -> list[BlockerOut]:
+    return [
+        BlockerOut(shift_id=b.shift_id, role=b.role, needed=b.needed, available=b.available)
+        for b in blockers
+    ]
 
 
 def _callout_out(absence: db.Absence) -> CalloutOut:
@@ -234,6 +243,10 @@ def create_draft(
     with service_errors():
         outcome = generate_draft(session, restaurant_id, week_start, request.deterministic)
         response = _draft_response(session, outcome)
+        if outcome.schedule is None:
+            response.blockers = _blockers_out(
+                week_blockers(session, restaurant_id, week_start, include_callouts=False)
+            )
     session.commit()
     return response
 
@@ -461,6 +474,7 @@ def repair_week(
                 explain_recorded_callouts(session, restaurant_id, week_start),
                 _employee_names(session, restaurant_id),
             )
+            response.blockers = _blockers_out(week_blockers(session, restaurant_id, week_start))
     session.commit()
     return response
 

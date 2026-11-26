@@ -3,6 +3,7 @@
 import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -18,12 +19,14 @@ from api.schemas import (
     RepairResponse,
     ScheduleResponse,
 )
+from api.errors import validation_error_handler
 from api.restaurants import router as restaurants_router
 from api.shifts import router as shifts_router
 from api.staff import router as staff_router
 from optimizer import engine
 
 app = FastAPI(title="ShiftSense API", version="0.1.0")
+app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 # Browsers block a page on one address (the dashboard, port 3000) from calling
 # an API on another (port 8000) unless the API allows it. Set

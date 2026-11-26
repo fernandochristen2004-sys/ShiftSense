@@ -11,7 +11,7 @@ import {
   type Skill,
   type WeeklyRule,
 } from "@/lib/api";
-import { formatDate, hhmm, WEEKDAYS } from "@/lib/dates";
+import { describeWindow, formatDate, hhmm, LONG_HOURS, WEEKDAYS } from "@/lib/dates";
 
 /** The Staff tab: who works here, their roles, hours and availability. */
 export function StaffPage({ restaurantId }: { restaurantId: number }) {
@@ -382,11 +382,16 @@ function AvailabilityEditor({ restaurantId, person }: { restaurantId: number; pe
   }, [restaurantId, person.id]);
 
   function changeRule(index: number, change: Partial<WeeklyRule>) {
+    setMessage(null);
     setRules(rules.map((rule, i) => (i === index ? { ...rule, ...change } : rule)));
   }
 
   async function saveWeekly() {
     setMessage(null);
+    if (rules.some((r) => !r.start_time || !r.end_time)) {
+      setMessage({ tone: "red", text: "Fill in both times on every row, or remove the row." });
+      return;
+    }
     try {
       const saved = await api.setWeekly(restaurantId, person.id, rules);
       setAvailability(saved);
@@ -415,38 +420,41 @@ function AvailabilityEditor({ restaurantId, person }: { restaurantId: number; pe
 
       <div className="space-y-2 text-sm">
         {rules.map((rule, index) => (
-          <div key={index} className="flex items-center gap-2">
-            <select
-              className={`${input} w-36`}
-              value={rule.weekday}
-              onChange={(e) => changeRule(index, { weekday: Number(e.target.value) })}
-            >
-              {WEEKDAYS.map((day, i) => (
-                <option key={day} value={i}>
-                  {day}
-                </option>
-              ))}
-            </select>
-            <input
-              className={`${input} w-28`}
-              type="time"
-              value={rule.start_time}
-              onChange={(e) => changeRule(index, { start_time: e.target.value })}
-            />
-            <span>to</span>
-            <input
-              className={`${input} w-28`}
-              type="time"
-              value={rule.end_time}
-              onChange={(e) => changeRule(index, { end_time: e.target.value })}
-            />
-            <button
-              className="px-2 text-slate-400 hover:text-red-600"
-              aria-label="Remove these hours"
-              onClick={() => setRules(rules.filter((_, i) => i !== index))}
-            >
-              ×
-            </button>
+          <div key={index}>
+            <div className="flex items-center gap-2">
+              <select
+                className={`${input} w-36`}
+                value={rule.weekday}
+                onChange={(e) => changeRule(index, { weekday: Number(e.target.value) })}
+              >
+                {WEEKDAYS.map((day, i) => (
+                  <option key={day} value={i}>
+                    {day}
+                  </option>
+                ))}
+              </select>
+              <input
+                className={`${input} w-28`}
+                type="time"
+                value={rule.start_time}
+                onChange={(e) => changeRule(index, { start_time: e.target.value })}
+              />
+              <span>to</span>
+              <input
+                className={`${input} w-28`}
+                type="time"
+                value={rule.end_time}
+                onChange={(e) => changeRule(index, { end_time: e.target.value })}
+              />
+              <button
+                className="px-2 text-slate-400 hover:text-red-600"
+                aria-label="Remove these hours"
+                onClick={() => setRules(rules.filter((_, i) => i !== index))}
+              >
+                ×
+              </button>
+            </div>
+            <WindowNote start={rule.start_time} end={rule.end_time} weekday={rule.weekday} />
           </div>
         ))}
       </div>
@@ -455,10 +463,7 @@ function AvailabilityEditor({ restaurantId, person }: { restaurantId: number; pe
         <button
           className={secondary}
           onClick={() =>
-            setRules([
-              ...rules,
-              { weekday: nextDay(rules), start_time: "10:00", end_time: "16:00" },
-            ])
+            setRules([...rules, { weekday: nextDay(rules), start_time: "", end_time: "" }])
           }
         >
           + Add hours
@@ -608,6 +613,20 @@ function DaysOff({
 }
 
 // Small pieces
+
+/** "Tue 06:00 → 15:00 · 9 h" under a row, in amber when it looks like an AM/PM slip. */
+function WindowNote({ start, end, weekday }: { start: string; end: string; weekday: number }) {
+  const window = describeWindow(start, end, weekday);
+  if (!window) return null;
+  const suspicious = window.hours === 0 || window.hours > LONG_HOURS;
+  return (
+    <p className={`mt-0.5 pl-1 text-xs ${suspicious ? "text-amber-700" : "text-slate-500"}`}>
+      {window.text}
+      {window.overnight && !suspicious && " (overnight)"}
+      {window.hours > LONG_HOURS && ". That's a long time: check AM and PM."}
+    </p>
+  );
+}
 
 function trimRule(rule: WeeklyRule): WeeklyRule {
   return { ...rule, start_time: hhmm(rule.start_time), end_time: hhmm(rule.end_time) };
