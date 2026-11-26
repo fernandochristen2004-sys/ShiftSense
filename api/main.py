@@ -19,6 +19,7 @@ from api.schemas import (
     ScheduleResponse,
 )
 from api.restaurants import router as restaurants_router
+from api.shifts import router as shifts_router
 from api.staff import router as staff_router
 from optimizer import engine
 
@@ -38,6 +39,7 @@ app.add_middleware(
 )
 app.include_router(restaurants_router)
 app.include_router(staff_router)
+app.include_router(shifts_router)
 
 
 class HealthResponse(BaseModel):

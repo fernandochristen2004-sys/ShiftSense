@@ -27,14 +27,12 @@ from api.stored_schemas import (
     OptionsRequest,
     PersonOut,
     PublishRequest,
-    RequirementOut,
     RepairOptionOut,
     RepairRequest,
     RestaurantOut,
     RiskReportOut,
     ScheduleDetail,
     ScheduleSummary,
-    ShiftOut,
     StoredAssignmentOut,
     StoredCalloutIn,
 )
@@ -217,59 +215,6 @@ def get_restaurant(
 ) -> RestaurantOut:
     with service_errors():
         return _restaurant_out(load_restaurant(session, restaurant_id))
-
-
-@router.get("/{restaurant_id}/weeks/{week_start}/shifts", response_model=list[ShiftOut])
-def list_shifts(
-    restaurant_id: int,
-    week_start: date,
-    session: Session = Depends(get_session),
-) -> list[ShiftOut]:
-    """Active shifts starting in the week, in order, with local times and roles."""
-    with service_errors():
-        restaurant = load_restaurant(session, restaurant_id)
-        period_start, period_end = week_bounds(week_start, ZoneInfo(restaurant.timezone))
-    local = ZoneInfo(restaurant.timezone)
-
-    shifts = session.scalars(
-        select(db.Shift)
-        .where(
-            db.Shift.restaurant_id == restaurant_id,
-            db.Shift.status == "active",
-            db.Shift.starts_at >= period_start,
-            db.Shift.starts_at < period_end,
-        )
-        .order_by(db.Shift.starts_at, db.Shift.id)
-    ).all()
-
-    requirements: dict[int, list[RequirementOut]] = {shift.id: [] for shift in shifts}
-    for shift_id, role, count, min_count in session.execute(
-        select(
-            db.ShiftRequirement.shift_id,
-            db.Skill.name,
-            db.ShiftRequirement.count,
-            db.ShiftRequirement.min_count,
-        )
-        .join(db.Skill, db.Skill.id == db.ShiftRequirement.skill_id)
-        .where(db.ShiftRequirement.shift_id.in_(list(requirements)))
-        .order_by(db.ShiftRequirement.shift_id, db.Skill.name)
-    ):
-        requirements[shift_id].append(RequirementOut(role=role, count=count, min_count=min_count))
-
-    result = []
-    for shift in shifts:
-        starts, ends = shift.starts_at.astimezone(local), shift.ends_at.astimezone(local)
-        result.append(ShiftOut(
-            id=shift.id,
-            label=shift.label,
-            starts_at=shift.starts_at,
-            ends_at=shift.ends_at,
-            local_date=starts.date(),
-            local_start=starts.time(),
-            local_end=ends.time(),
-            requirements=requirements[shift.id],
-        ))
-    return result
 
 
 # Schedules

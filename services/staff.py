@@ -38,8 +38,8 @@ def list_skills(session: Session, restaurant_id: int) -> list[db.Skill]:
 def create_skill(session: Session, restaurant_id: int, name: str) -> db.Skill:
     """Add a role such as "barista". Names are stored lower-case."""
     load_restaurant(session, restaurant_id)
-    name = _clean_name(name, "Role name")
-    if _skill_ids(session, restaurant_id, [name]):
+    name = clean_name(name, "Role name")
+    if skill_ids(session, restaurant_id, [name]):
         raise ConflictError(f'The role "{name}" already exists.')
 
     skill = db.Skill(restaurant_id=restaurant_id, name=name)
@@ -48,14 +48,14 @@ def create_skill(session: Session, restaurant_id: int, name: str) -> db.Skill:
     return skill
 
 
-def _clean_name(name: str, what: str) -> str:
+def clean_name(name: str, what: str) -> str:
     cleaned = " ".join(name.split()).lower()
     if not cleaned:
         raise ValueError(f"{what} can't be blank.")
     return cleaned
 
 
-def _skill_ids(session: Session, restaurant_id: int, names) -> dict[str, int]:
+def skill_ids(session: Session, restaurant_id: int, names) -> dict[str, int]:
     return dict(session.execute(
         select(db.Skill.name, db.Skill.id).where(
             db.Skill.restaurant_id == restaurant_id, db.Skill.name.in_(list(names))
@@ -95,7 +95,7 @@ def create_employee(
     phone: str | None = None,
 ) -> StaffMember:
     load_restaurant(session, restaurant_id)
-    skill_ids = _resolve_skills(session, restaurant_id, skills)  # check before saving anything
+    role_ids = _resolve_skills(session, restaurant_id, skills)  # check before saving anything
     employee = db.Employee(restaurant_id=restaurant_id, status="active")
     _apply(
         session, employee,
@@ -107,7 +107,7 @@ def create_employee(
     )
     session.add(employee)
     session.flush()
-    _set_skills(session, employee, skill_ids)
+    _set_skills(session, employee, role_ids)
     return get_staff_member(session, restaurant_id, employee.id)
 
 
@@ -122,11 +122,11 @@ def update_employee(
     """
     employee = _employee(session, restaurant_id, employee_id)
     skills = changes.pop("skills", UNSET)
-    skill_ids = None if skills is UNSET else _resolve_skills(session, restaurant_id, skills)
+    role_ids = None if skills is UNSET else _resolve_skills(session, restaurant_id, skills)
     _apply(session, employee, **changes)
     session.flush()
-    if skill_ids is not None:
-        _set_skills(session, employee, skill_ids)
+    if role_ids is not None:
+        _set_skills(session, employee, role_ids)
     return get_staff_member(session, restaurant_id, employee.id)
 
 
@@ -194,8 +194,8 @@ def _number_taken(session: Session, employee: db.Employee, number: str) -> bool:
 
 def _resolve_skills(session: Session, restaurant_id: int, names: list[str]) -> set[int]:
     """Role names to ids. Every role must already exist."""
-    wanted = {_clean_name(name, "Role name") for name in names}
-    ids = _skill_ids(session, restaurant_id, wanted)
+    wanted = {clean_name(name, "Role name") for name in names}
+    ids = skill_ids(session, restaurant_id, wanted)
     unknown = sorted(wanted - ids.keys())
     if unknown:
         raise ValueError(

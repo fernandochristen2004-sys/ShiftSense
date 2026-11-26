@@ -234,6 +234,8 @@ def record_absence(
     shift = session.get(db.Shift, shift_id)
     if shift is None or shift.restaurant_id != restaurant_id:
         raise LookupError(f"Shift {shift_id} not found.")
+    if shift.status != "active":
+        raise ValueError("That shift was cancelled, so there is nothing to call out of.")
 
     published = session.scalars(
         select(db.Schedule).where(
