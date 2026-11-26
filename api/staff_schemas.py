@@ -1,10 +1,11 @@
-"""JSON models for managing staff: roles and employees."""
+"""JSON models for managing staff: roles, employees and availability."""
 
+from datetime import date, time
 from typing import Literal
 
 from pydantic import Field
 
-from api.schemas import ApiModel
+from api.schemas import ApiModel, TimeIntervalIn, WeeklyAvailabilityIn
 
 MAX_WEEKLY_HOURS = 80
 
@@ -52,3 +53,49 @@ class EmployeeOut(ApiModel):
     skills: list[str]
     employee_number: str | None
     phone: str | None
+
+
+# Availability
+
+class WeeklyHoursIn(ApiModel):
+    """Replaces all of someone's weekly hours. An empty list means never available."""
+
+    rules: list[WeeklyAvailabilityIn] = Field(
+        max_length=50,
+        examples=[[
+            {"weekday": 0, "start_time": "10:00", "end_time": "23:00"},
+            {"weekday": 4, "start_time": "16:00", "end_time": "02:00"},
+        ]],
+    )
+
+
+class DateExceptionIn(ApiModel):
+    available: bool = Field(
+        description="false = off all day; true = only the windows listed in intervals",
+    )
+    intervals: list[TimeIntervalIn] = Field(default_factory=list, max_length=10)
+    note: str | None = Field(default=None, max_length=200, examples=["Exam"])
+
+
+class WeeklyRuleOut(ApiModel):
+    weekday: int = Field(description="0 = Monday … 6 = Sunday")
+    start_time: time
+    end_time: time = Field(description="Earlier than start_time means it crosses midnight")
+
+
+class TimeIntervalOut(ApiModel):
+    start_time: time
+    end_time: time
+
+
+class DateExceptionOut(ApiModel):
+    date: date
+    available: bool
+    intervals: list[TimeIntervalOut]
+    note: str | None
+
+
+class AvailabilityOut(ApiModel):
+    employee_id: int
+    weekly: list[WeeklyRuleOut]
+    exceptions: list[DateExceptionOut]

@@ -1,14 +1,34 @@
-"""Endpoints for a restaurant's staff: roles (skills) and employees.
+"""Endpoints for a restaurant's staff: roles (skills), employees and availability.
 
 Error codes are listed in api/errors.py.
 """
 
-from fastapi import APIRouter, Depends, status
+from datetime import date
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
 from api.deps import get_session
 from api.errors import error, service_errors
-from api.staff_schemas import EmployeeIn, EmployeeOut, EmployeeUpdate, SkillIn, SkillOut
+from api.staff_schemas import (
+    AvailabilityOut,
+    DateExceptionIn,
+    DateExceptionOut,
+    EmployeeIn,
+    EmployeeOut,
+    EmployeeUpdate,
+    SkillIn,
+    SkillOut,
+    TimeIntervalOut,
+    WeeklyHoursIn,
+    WeeklyRuleOut,
+)
+from services.availability import (
+    Availability,
+    get_availability,
+    remove_exception,
+    replace_weekly,
+    set_exception,
+)
 from services.staff import (
     StaffMember,
     create_employee,
@@ -116,3 +136,96 @@ def edit_employee(
         member = update_employee(session, restaurant_id, employee_id, **changes)
         session.commit()
         return _employee_out(member)
+
+
+# Availability
+
+def _availability_out(employee_id: int, availability: Availability) -> AvailabilityOut:
+    return AvailabilityOut(
+        employee_id=employee_id,
+        weekly=[
+            WeeklyRuleOut(weekday=r.weekday, start_time=r.start_time, end_time=r.end_time)
+            for r in availability.weekly
+        ],
+        exceptions=[
+            DateExceptionOut(
+                date=e.date,
+                available=e.available,
+                intervals=[TimeIntervalOut(start_time=a, end_time=b) for a, b in e.intervals],
+                note=e.note,
+            )
+            for e in availability.exceptions
+        ],
+    )
+
+
+AVAILABILITY = "/{restaurant_id}/employees/{employee_id}/availability"
+
+
+@router.get(AVAILABILITY, response_model=AvailabilityOut)
+def get_employee_availability(
+    restaurant_id: int, employee_id: int, session: Session = Depends(get_session)
+) -> AvailabilityOut:
+    """Weekly hours (restaurant time) and date exceptions."""
+    with service_errors():
+        return _availability_out(employee_id, get_availability(session, restaurant_id, employee_id))
+
+
+@router.put(AVAILABILITY + "/weekly", response_model=AvailabilityOut)
+def set_weekly_hours(
+    restaurant_id: int,
+    employee_id: int,
+    request: WeeklyHoursIn,
+    session: Session = Depends(get_session),
+) -> AvailabilityOut:
+    """Replace someone's weekly hours. Date exceptions are kept.
+
+    A rule ending earlier than it starts (16:00-02:00) crosses midnight.
+    """
+    with service_errors():
+        availability = replace_weekly(
+            session, restaurant_id, employee_id,
+            [(r.weekday, r.start_time, r.end_time) for r in request.rules],
+        )
+        session.commit()
+        return _availability_out(employee_id, availability)
+
+
+@router.put(AVAILABILITY + "/exceptions/{local_date}", response_model=AvailabilityOut)
+def set_date_exception(
+    restaurant_id: int,
+    employee_id: int,
+    local_date: date,
+    request: DateExceptionIn,
+    session: Session = Depends(get_session),
+) -> AvailabilityOut:
+    """Override the weekly hours on one date (restaurant time).
+
+    {"available": false} = off all day. {"available": true, "intervals": [...]}
+    = only those same-day windows. Sending it again replaces it.
+    """
+    with service_errors():
+        availability = set_exception(
+            session, restaurant_id, employee_id, local_date,
+            available=request.available,
+            intervals=[(i.start_time, i.end_time) for i in request.intervals],
+            note=request.note,
+        )
+        session.commit()
+        return _availability_out(employee_id, availability)
+
+
+@router.delete(
+    AVAILABILITY + "/exceptions/{local_date}", status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_date_exception(
+    restaurant_id: int,
+    employee_id: int,
+    local_date: date,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Remove a date exception, so the weekly hours apply again."""
+    with service_errors():
+        remove_exception(session, restaurant_id, employee_id, local_date)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from db import models as db
 from optimizer import engine
 from optimizer.models import ScheduleResult
+from optimizer.timeutils import employee_is_available
 from services.callouts import exclusions_for_callouts
 from services.loading import WeekInputs, load_restaurant, load_week
 from services.weeks import week_bounds
@@ -315,18 +316,27 @@ def full_original_schedule(
 ) -> dict[int, dict[str, list[int]]]:
     """A saved revision in the engine's repair format: every shift and role.
 
-    Staff can change after publishing. Anyone who is now inactive, or no
-    longer has the role, is left out, so the repair fills their place (and
-    the saved repair lists them as taken off).
+    Staff can change after publishing. Anyone who is now inactive, no longer
+    has the role, or is no longer available for the shift is left out, so the
+    repair fills their place (and the saved repair lists them as taken off).
     """
     saved = schedule_assignments(session, schedule_id)
-    skills = {employee.id: employee.skills for employee in inputs.employees}
+    employees = {employee.id: employee for employee in inputs.employees}
+
+    def still_fits(employee_id: int, shift, role: str) -> bool:
+        employee = employees.get(employee_id)
+        return (
+            employee is not None
+            and role in employee.skills
+            and employee_is_available(employee, shift, inputs.timezone)
+        )
+
     return {
         shift.id: {
             requirement.skill: [
                 employee_id
                 for employee_id in saved.get(shift.id, {}).get(requirement.skill, [])
-                if requirement.skill in skills.get(employee_id, ())
+                if still_fits(employee_id, shift, requirement.skill)
             ]
             for requirement in shift.requirements
         }
