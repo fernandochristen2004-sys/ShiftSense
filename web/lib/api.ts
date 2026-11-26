@@ -103,6 +103,27 @@ export type Candidate = {
   max_hours: number | null;
 };
 
+/** One complete way to cover a call-out (not saved until chosen). */
+export type RepairOption = {
+  cover: { employee_id: number; name: string } | null; // null = leave the spot empty
+  extra_missing: number;
+  changes: number;
+  fairness_change_hours: number; // negative = fairer
+  cover_week_hours: number | null;
+  cover_max_hours: number | null;
+  cover_same_day_shift_ids: number[];
+  change_list: Change[];
+  assignments: Assignment[];
+  shortages: Shortage[];
+};
+
+export type OptionsReport = {
+  shift_id: number;
+  role: string;
+  options: RepairOption[]; // best first
+  why: Explanation | null; // when nobody can fill the spot
+};
+
 export type Callout = {
   id: number;
   shift_id: number;
@@ -166,8 +187,22 @@ export const api = {
     body: { shift_id: number; employee_id: number; rest_of_day: boolean; note?: string },
   ) => post<Callout>(`/restaurants/${restaurantId}/callouts`, body),
 
-  repair: (restaurantId: number, week: string) =>
-    post<DraftResult>(`/restaurants/${restaurantId}/weeks/${week}/repair`),
+  repairOptions: (restaurantId: number, week: string, shiftId: number, employeeId: number) =>
+    post<OptionsReport>(`/restaurants/${restaurantId}/weeks/${week}/repair-options`, {
+      shift_id: shiftId,
+      employee_id: employeeId,
+    }),
+
+  /** Save a repair as a draft; with `cover`, the chosen option from repairOptions. */
+  repair: (
+    restaurantId: number,
+    week: string,
+    cover?: { shift_id: number; role: string; employee_id: number } | null,
+  ) =>
+    post<DraftResult>(`/restaurants/${restaurantId}/weeks/${week}/repair`, {
+      deterministic: true,
+      cover: cover ?? null,
+    }),
 
   publish: (restaurantId: number, schedule: Schedule, acceptShortages: boolean) =>
     post<Schedule>(`/restaurants/${restaurantId}/schedules/${schedule.id}/publish`, {

@@ -13,6 +13,28 @@ class DraftRequest(ApiModel):
     deterministic: bool = Field(default=False, description="Same result every run (slower)")
 
 
+class CoverIn(ApiModel):
+    """Lock this person into the slot a call-out left (a chosen repair option)."""
+
+    shift_id: int = Field(gt=0)
+    role: str = Field(min_length=1)
+    employee_id: int = Field(gt=0)
+
+
+class RepairRequest(ApiModel):
+    deterministic: bool = Field(default=False, description="Same result every run (slower)")
+    cover: CoverIn | None = Field(
+        default=None, description="Save this option from /repair-options (use deterministic)",
+    )
+
+
+class OptionsRequest(ApiModel):
+    """The recorded call-out to find cover for."""
+
+    shift_id: int = Field(gt=0)
+    employee_id: int = Field(gt=0)
+
+
 class PublishRequest(ApiModel):
     expected_row_version: int = Field(
         ge=1, description="The row_version you loaded. Publishing is refused if it changed",
@@ -112,6 +134,30 @@ class DraftResponse(ApiModel):
     explanation: ExplanationOut | None = Field(
         default=None, description="Repairs only: why the call-outs can't be covered",
     )
+
+
+class RepairOptionOut(ApiModel):
+    """One complete way to cover a call-out. Not saved until chosen."""
+
+    cover: PersonOut | None = Field(description="Who fills the slot; null = left empty")
+    extra_missing: int = Field(description="Positions short beyond the published week")
+    changes: int = Field(description="Assignments changed from the published week")
+    fairness_change_hours: float = Field(
+        description="Change in total distance from hour targets; negative is fairer",
+    )
+    cover_week_hours: float | None
+    cover_max_hours: int | None
+    cover_same_day_shift_ids: list[int] = Field(description="The cover's other shifts that day")
+    change_list: list[ChangeOut]
+    assignments: list[StoredAssignmentOut]
+    shortages: list[ShortageOut]
+
+
+class OptionsOut(ApiModel):
+    shift_id: int
+    role: str
+    options: list[RepairOptionOut] = Field(description="Best first")
+    why: ExplanationOut | None = Field(description="When nobody can fill the slot")
 
 
 class CalloutOut(ApiModel):

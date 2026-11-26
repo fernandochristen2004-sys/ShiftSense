@@ -33,9 +33,13 @@ from api.stored_schemas import (
     DraftResponse,
     ExplanationOut,
     GapOut,
+    OptionsOut,
+    OptionsRequest,
     PersonOut,
     PublishRequest,
     RequirementOut,
+    RepairOptionOut,
+    RepairRequest,
     RestaurantOut,
     RiskReportOut,
     ScheduleDetail,
@@ -48,6 +52,7 @@ from db import models as db
 from services.loading import load_restaurant
 from optimizer.explain import REASON_ORDER
 from services.explanations import CalloutExplanation, explain_recorded_callouts
+from services.options import repair_options
 from services.risk import callout_risk
 from services.scheduling import (
     DraftOutcome,
@@ -459,20 +464,90 @@ def delete_callout(
         session.commit()
 
 
+@router.post(
+    "/{restaurant_id}/weeks/{week_start}/repair-options", response_model=OptionsOut
+)
+def get_repair_options(
+    restaurant_id: int,
+    week_start: date,
+    request: OptionsRequest,
+    session: Session = Depends(get_session),
+) -> OptionsOut:
+    """Up to 3 ways to cover a recorded call-out, best first. Nothing is saved.
+
+    Ranked by positions short, then changes, then fairness, then how much
+    room the cover has under their max hours. To use one, call /repair with
+    its `cover` and `deterministic: true`.
+    """
+    with _service_errors():
+        report = repair_options(
+            session, restaurant_id, week_start, request.shift_id, request.employee_id
+        )
+        period_start, _ = _restaurant_week(session, restaurant_id, week_start)
+        published = current_published(session, restaurant_id, period_start)
+
+    names = _employee_names(session, restaurant_id)
+    published_missing = sum(s["missing"] for s in published.shortages)
+    published_fairness = (published.schedule_metrics or {}).get("target_deviation_min", 0)
+    before = _as_engine_format(_assignments(session, published.id))
+
+    def option_out(option) -> RepairOptionOut:
+        result = option.result
+        return RepairOptionOut(
+            cover=(
+                PersonOut(employee_id=option.cover.employee_id,
+                          name=names.get(option.cover.employee_id, "?"))
+                if option.cover else None
+            ),
+            extra_missing=max(0, option.missing - published_missing),
+            changes=option.changes,
+            fairness_change_hours=(option.fairness_minutes - published_fairness) / 60,
+            cover_week_hours=None if option.cover_minutes is None else option.cover_minutes / 60,
+            cover_max_hours=option.cover_max_hours,
+            cover_same_day_shift_ids=list(option.cover_same_day),
+            change_list=schedule_changes(before, result.assignments),
+            assignments=[
+                StoredAssignmentOut(
+                    shift_id=shift_id, role=role, employee_id=employee_id,
+                    employee_name=names.get(employee_id, f"#{employee_id}"),
+                )
+                for shift_id, roles in sorted(result.assignments.items())
+                for role, ids in sorted(roles.items())
+                for employee_id in sorted(ids)
+            ],
+            shortages=[
+                ShortageOut(shift_id=s.shift_id, role=s.role, missing=s.missing)
+                for s in result.shortages
+            ],
+        )
+
+    return OptionsOut(
+        shift_id=report.shift_id,
+        role=report.role,
+        options=[option_out(option) for option in report.options],
+        why=_explanation_out(report.why, names),
+    )
+
+
 @router.post("/{restaurant_id}/weeks/{week_start}/repair", response_model=DraftResponse)
 def repair_week(
     restaurant_id: int,
     week_start: date,
-    request: DraftRequest = DraftRequest(),
+    request: RepairRequest = RepairRequest(),
     session: Session = Depends(get_session),
 ) -> DraftResponse:
     """Repair the published week around every recorded call-out.
 
     The repair is saved as a draft; `schedule.changes` lists what moved.
     The published schedule stays live until the repair is published.
+    Pass `cover` (from /repair-options) to save that option.
     """
+    cover = request.cover
     with _service_errors():
-        outcome = repair_published(session, restaurant_id, week_start, request.deterministic)
+        outcome = repair_published(
+            session, restaurant_id, week_start, request.deterministic,
+            cover=(cover.shift_id, cover.role, cover.employee_id) if cover else None,
+        )
         response = _draft_response(session, outcome)
         if outcome.schedule is None:
             response.explanation = _explanation_out(

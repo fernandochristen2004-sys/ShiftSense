@@ -10,6 +10,8 @@ import {
   type CalloutRisk,
   type Candidate,
   type Explanation,
+  type OptionsReport,
+  type RepairOption,
   type Restaurant,
   type RiskReport,
   type Schedule,
@@ -25,7 +27,10 @@ type WeekData = { shifts: Shift[]; schedule: Schedule | null; callouts: Callout[
 type Selection = { assignment: Assignment; shift: Shift };
 
 /** A repair waiting for the manager's approval. */
-type Proposal = { draft: Schedule; calledOut: Selection };
+type Proposal = { calledOut: Selection; report: OptionsReport; selected: number };
+
+/** What the grid shows while a repair is being considered. */
+type Preview = { draft: Schedule };
 
 /** Call-out risk per assignment, keyed by `${shift_id}-${employee_id}`. */
 type RiskLookup = Map<string, CalloutRisk>;
@@ -138,18 +143,25 @@ export function Dashboard() {
         employee_id: selection.assignment.employee_id,
         rest_of_day: restOfDay,
       });
-      const result = await api.repair(restaurantId, week);
-      if (result.schedule === null) {
-        if (result.explanation) {
-          setWhy({
-            explanation: result.explanation,
-            title: "No repair possible. The call-out is recorded; cancel it below if plans change",
-          });
-        } else {
-          setError("No repair possible. The call-out is recorded; cancel it below if plans change.");
-        }
-      } else {
-        setProposal({ draft: result.schedule, calledOut: selection });
+      const report = await api.repairOptions(
+        restaurantId,
+        week,
+        selection.shift.id,
+        selection.assignment.employee_id,
+      );
+      if (report.why) {
+        setWhy({
+          explanation: report.why,
+          title:
+            report.options.length > 0
+              ? "Nobody can fill this spot. The best repair leaves it empty"
+              : "No repair possible. The call-out is recorded; cancel it below if plans change",
+        });
+      }
+      if (report.options.length > 0) {
+        setProposal({ calledOut: selection, report, selected: 0 });
+      } else if (!report.why) {
+        setError("No repair possible. The call-out is recorded; cancel it below if plans change.");
       }
       setSelection(null);
       setReloads((n) => n + 1); // refresh the call-out list
@@ -181,11 +193,27 @@ export function Dashboard() {
 
   async function approve(acceptShortages: boolean) {
     if (!proposal || restaurantId === null) return;
+    const option = proposal.report.options[proposal.selected];
     setBusy("Publishing…");
     setError(null);
     try {
-      const published = await api.publish(restaurantId, proposal.draft, acceptShortages);
+      const saved = await api.repair(
+        restaurantId,
+        week,
+        option.cover && {
+          shift_id: proposal.report.shift_id,
+          role: proposal.report.role,
+          employee_id: option.cover.employee_id,
+        },
+      );
+      if (!saved.schedule) {
+        setError("That option is no longer possible. Record the call-out again to see new options.");
+        setProposal(null);
+        return;
+      }
+      const published = await api.publish(restaurantId, saved.schedule, acceptShortages);
       setProposal(null);
+      setWhy(null);
       setNotice(`Revision ${published.revision_number} is now live.`);
       setReloads((n) => n + 1);
     } catch (e) {
@@ -284,12 +312,17 @@ export function Dashboard() {
       )}
 
       {proposal && !busy && data?.schedule && (
-        <ProposalPanel
+        <OptionsPanel
           proposal={proposal}
           published={data.schedule}
           shifts={data.shifts}
+          callouts={data.callouts}
+          onSelect={(index) => setProposal({ ...proposal, selected: index })}
           onApprove={approve}
-          onDiscard={() => setProposal(null)}
+          onDiscard={() => {
+            setProposal(null);
+            setWhy(null);
+          }}
         />
       )}
 
@@ -298,7 +331,7 @@ export function Dashboard() {
           week={week}
           shifts={data.shifts}
           published={data.schedule}
-          proposal={proposal}
+          proposal={proposal && data.schedule ? previewOf(proposal, data.schedule) : null}
           selection={selection}
           risks={risk && !proposal ? riskLookup(risk) : null}
           onCheckRisk={busy || proposal ? undefined : checkRisk}
@@ -350,60 +383,105 @@ function CalloutPanel({
   );
 }
 
-function ProposalPanel({
+/** The grid's view of an option: the published week with the option applied. */
+function previewOf(proposal: Proposal, published: Schedule): Preview {
+  const option = proposal.report.options[proposal.selected];
+  return {
+    draft: {
+      ...published,
+      status: "draft",
+      revision_number: published.revision_number + 1,
+      assignments: option.assignments,
+      changes: option.change_list,
+      shortages: option.shortages,
+    },
+  };
+}
+
+function OptionsPanel({
   proposal,
   published,
   shifts,
+  callouts,
+  onSelect,
   onApprove,
   onDiscard,
 }: {
   proposal: Proposal;
   published: Schedule;
   shifts: Shift[];
+  callouts: Callout[];
+  onSelect: (index: number) => void;
   onApprove: (acceptShortages: boolean) => void;
   onDiscard: () => void;
 }) {
-  const { draft, calledOut } = proposal;
-  const missing = totalMissing(draft);
+  const { report, calledOut, selected } = proposal;
+  const option = report.options[selected];
+  const missing = option.shortages.reduce((total, s) => total + s.missing, 0);
   const [accepted, setAccepted] = useState(false);
-  const names = nameLookup(published, draft);
-  const changes = draft.changes ?? [];
+  const names = nameLookup(published, previewOf(proposal, published).draft);
+  const where = shiftName(calledOut.shift);
+  const count = report.options.length;
 
   return (
     <div className="mb-4 rounded-lg border border-sky-300 bg-sky-50 px-4 py-3 text-sm">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <strong>Repair proposal · revision {draft.revision_number}</strong>
-        <Badge tone="slate">
-          {changes.length} change{changes.length === 1 ? "" : "s"}
-        </Badge>
-        {missing > 0 ? (
-          <Badge tone="amber">{missing} position(s) short</Badge>
-        ) : (
-          <Badge tone="green">Fully covered</Badge>
-        )}
-        <span className="text-slate-500">
-          after {calledOut.assignment.employee_name} called out
-        </span>
+      <p className="mb-3">
+        <strong>
+          {count === 1 ? "1 way" : `${count} ways`} to cover {calledOut.assignment.employee_name}
+          &apos;s {where} ({report.role})
+        </strong>
+        <span className="text-slate-500"> · best first; pick one to preview it below</span>
+      </p>
+
+      <div className="mb-3 grid gap-3 md:grid-cols-3">
+        {report.options.map((choice, index) => (
+          <button
+            key={choice.cover?.employee_id ?? "empty"}
+            onClick={() => {
+              onSelect(index);
+              setAccepted(false);
+            }}
+            className={`rounded-lg border bg-white px-4 py-3 text-left ${
+              index === selected
+                ? "border-sky-500 ring-2 ring-sky-200"
+                : "border-slate-200 hover:border-slate-400"
+            }`}
+          >
+            <p className="mb-1 flex items-center gap-2 font-medium">
+              {choice.cover ? `${choice.cover.name} covers it` : "Leave the spot empty"}
+              {index === 0 && <Badge tone="green">Best</Badge>}
+              {index > 0 && sameRank(choice, report.options[0]) && (
+                <Badge tone="green">Equally good</Badge>
+              )}
+            </p>
+            <ul className="space-y-0.5 text-slate-600">
+              {optionFacts(choice, report.options[0], calledOut, callouts, names, shifts).map((fact) => (
+                <li key={fact}>{fact}</li>
+              ))}
+            </ul>
+          </button>
+        ))}
       </div>
 
+      <p className="mb-1 text-xs text-slate-500">What changes with this option</p>
       <ul className="mb-3 space-y-0.5">
-        {changes.map((change) => {
+        {option.change_list.map((change) => {
           const shift = shifts.find((s) => s.id === change.shift_id);
           const name = names.get(change.employee_id) ?? `#${change.employee_id}`;
-          const where = shift ? shiftName(shift) : `shift ${change.shift_id}`;
+          const at = shift ? shiftName(shift) : `shift ${change.shift_id}`;
           return (
             <li key={`${change.shift_id}-${change.employee_id}`}>
               {change.after_role === null ? (
                 <span className="text-red-700">
-                  − {name} off {where} ({change.before_role})
+                  − {name} off {at} ({change.before_role})
                 </span>
               ) : change.before_role === null ? (
                 <span className="text-emerald-700">
-                  + {name} on {where} ({change.after_role})
+                  + {name} on {at} ({change.after_role})
                 </span>
               ) : (
                 <span className="text-sky-800">
-                  ~ {name} on {where}: {change.before_role} → {change.after_role}
+                  ~ {name} on {at}: {change.before_role} → {change.after_role}
                 </span>
               )}
             </li>
@@ -437,6 +515,76 @@ function ProposalPanel({
   );
 }
 
+/** Same ranking as the best option: as short, as few changes, as fair, same load. */
+function sameRank(option: RepairOption, best: RepairOption): boolean {
+  const load = (o: RepairOption) =>
+    o.cover_week_hours !== null && o.cover_max_hours ? o.cover_week_hours / o.cover_max_hours : 0;
+  return (
+    option.extra_missing === best.extra_missing &&
+    option.changes === best.changes &&
+    option.fairness_change_hours === best.fairness_change_hours &&
+    load(option) === load(best)
+  );
+}
+
+/** Short reasons to pick (or not pick) an option, compared with the best one. */
+function optionFacts(
+  option: RepairOption,
+  best: RepairOption,
+  calledOut: Selection,
+  callouts: Callout[],
+  names: Map<number, string>,
+  shifts: Shift[],
+): string[] {
+  const facts = [`${option.changes} change${option.changes === 1 ? "" : "s"} to the week`];
+  const calledOutId = calledOut.assignment.employee_id;
+  const moved = new Set(option.change_list.map((c) => c.employee_id));
+
+  // Earlier call-outs this repair also deals with.
+  const earlier = callouts
+    .map((c) => c.employee_id)
+    .filter((id, i, all) => id !== calledOutId && moved.has(id) && all.indexOf(id) === i);
+  if (earlier.length > 0) {
+    const who = earlier.map((id) => names.get(id) ?? `#${id}`).join(", ");
+    facts.push(`Also covers earlier call-outs: ${who}`);
+  }
+
+  // Anyone else moved besides the people who called out and this cover.
+  const others = new Set(
+    [...moved].filter(
+      (id) => id !== calledOutId && id !== option.cover?.employee_id && !earlier.includes(id),
+    ),
+  );
+  if (others.size > 0) {
+    facts.push(
+      `Also moves ${others.size} other ${others.size === 1 ? "person" : "people"} ` +
+        "to fill other gaps or stay within the rules",
+    );
+  }
+  if (option.extra_missing > 0) {
+    facts.push(`Leaves ${option.extra_missing} more position(s) short`);
+  }
+  if (option.cover && option.cover_week_hours !== null) {
+    facts.push(
+      `${option.cover.name}: ${round(option.cover_week_hours)} of ${option.cover_max_hours} h this week`,
+    );
+  }
+  for (const id of option.cover_same_day_shift_ids) {
+    const shift = shifts.find((s) => s.id === id);
+    if (shift) facts.push(`Also works ${shiftName(shift)}`);
+  }
+  // Fairness only matters in comparison: the called-out person's lost hours
+  // affect every option the same way.
+  const fairness = option.fairness_change_hours - best.fairness_change_hours;
+  if (fairness > 0) facts.push(`Hours less even than the best option (+${round(fairness)} h)`);
+  else if (fairness < 0) facts.push(`Hours more even than the best option (${round(-fairness)} h)`);
+  return facts;
+}
+
+function round(hours: number): string {
+  return Number.isInteger(hours) ? String(hours) : hours.toFixed(1);
+}
+
 // The grid
 
 function WeekView({
@@ -452,7 +600,7 @@ function WeekView({
   week: string;
   shifts: Shift[];
   published: Schedule | null;
-  proposal: Proposal | null;
+  proposal: Preview | null;
   selection: Selection | null;
   risks: RiskLookup | null;
   onCheckRisk?: () => void;
@@ -479,7 +627,7 @@ function WeekView({
               <Badge tone="green">Fully covered</Badge>
             )}
             <span className="text-slate-500">
-              {proposal ? "Showing the proposed repair" : "Click a name to record a call-out"}
+              {proposal ? "Showing the selected option" : "Click a name to record a call-out"}
             </span>
             {onCheckRisk && (
               <button
@@ -556,7 +704,7 @@ function ShiftCell({
 }: {
   shift: Shift;
   schedule: Schedule | null;
-  proposal: Proposal | null;
+  proposal: Preview | null;
   names: Map<number, string> | null;
   selection: Selection | null;
   risks: RiskLookup | null;

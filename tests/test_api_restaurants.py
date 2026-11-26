@@ -497,3 +497,75 @@ def test_failed_repair_explains_why(client, demo):
     assert gap["called_out"][0]["name"] == no_fix["employee_name"]
     assert gap["candidates"]
     assert all(c["reason"] != "called_out" for c in gap["candidates"])
+
+
+# Ranked replacements
+
+def _covered_callout_with_options(client, demo):
+    """Record a call-out that has more than one way to cover it."""
+    _publish(client, demo, _draft(client, demo))
+    risks = client.get(_base(demo) + WEEK + "/risk").json()["risks"]
+    for risk in (r for r in risks if r["level"] == "covered"):
+        body = {"shift_id": risk["shift_id"], "employee_id": risk["employee_id"]}
+        callout = client.post(_base(demo) + "/callouts", json=body).json()
+        options = client.post(_base(demo) + WEEK + "/repair-options", json=body).json()
+        if len(options["options"]) > 1:
+            return risk, options
+        client.delete(_base(demo) + f"/callouts/{callout['id']}")
+    pytest.skip("no call-out with several options in this demo week")
+
+
+def test_repair_options(client, demo):
+    risk, options = _covered_callout_with_options(client, demo)
+
+    assert options["shift_id"] == risk["shift_id"]
+    assert options["role"] == risk["role"]
+    assert options["why"] is None
+    best = options["options"][0]
+    assert best["cover"]["name"]
+    assert best["extra_missing"] == 0
+    assert best["changes"] == risk["changes"]
+    assert any(
+        c["employee_id"] == risk["employee_id"] and c["after_role"] is None
+        for c in best["change_list"]
+    )
+    assert any(
+        a["employee_id"] == best["cover"]["employee_id"] and a["shift_id"] == risk["shift_id"]
+        for a in best["assignments"]
+    )
+
+
+def test_saving_a_chosen_option(client, demo):
+    risk, options = _covered_callout_with_options(client, demo)
+    chosen = options["options"][1]
+
+    response = client.post(
+        _base(demo) + WEEK + "/repair",
+        json={
+            "deterministic": True,
+            "cover": {
+                "shift_id": risk["shift_id"],
+                "role": risk["role"],
+                "employee_id": chosen["cover"]["employee_id"],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    saved = response.json()["schedule"]
+    as_set = lambda items: {(a["shift_id"], a["role"], a["employee_id"]) for a in items}
+    assert as_set(saved["assignments"]) == as_set(chosen["assignments"])
+    assert saved["assignment_changes"] == chosen["changes"]
+
+
+def test_options_need_a_recorded_callout(client, demo):
+    published = _publish(client, demo, _draft(client, demo))
+    shift_id, employee_id = pick_callout(_engine_format(published), seed=0)
+
+    response = client.post(
+        _base(demo) + WEEK + "/repair-options",
+        json={"shift_id": shift_id, "employee_id": employee_id},
+    )
+
+    assert response.status_code == 422
+    assert "Record the call-out first" in response.json()["detail"]["message"]

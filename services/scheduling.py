@@ -329,11 +329,15 @@ def repair_published(
     restaurant_id: int,
     week_start: date,
     deterministic: bool = False,
+    cover: "tuple[int, str, int] | None" = None,
 ) -> DraftOutcome:
     """Repair the week's published schedule using every recorded call-out.
 
     The repair is saved as a new draft based on the published revision. The
     published revision stays in place until the repair is published.
+
+    `cover` is (shift_id, role, employee_id): the person the manager chose
+    to fill a gap (see services/options.py). They're locked into that slot.
     """
     restaurant = load_restaurant(session, restaurant_id)
     period_start, period_end = week_bounds(week_start, ZoneInfo(restaurant.timezone))
@@ -353,6 +357,7 @@ def repair_published(
         policy=inputs.policy,
         original_schedule=full_original_schedule(session, published.id, inputs),
         outside_assignments=inputs.outside_assignments,
+        locked_assignments={cover[0]: {cover[1]: [cover[2]]}} if cover else None,
         excluded_assignments=excluded or None,
         scheduling_timezone=inputs.timezone,
         deterministic=deterministic,
