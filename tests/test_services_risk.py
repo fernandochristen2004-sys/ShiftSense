@@ -7,6 +7,7 @@ import pytest
 from services.demo import seed_demo_restaurant
 from services.risk import callout_risk
 from services.scheduling import (
+    cancel_absence,
     generate_draft,
     publish_schedule,
     record_absence,
@@ -53,7 +54,9 @@ def test_every_assignment_is_checked(db, published):
     for risk in report.risks:
         if risk.level == "no_fix":
             assert risk.extra_missing is None and risk.changes is None
+            assert " is off " in risk.reason
         else:
+            assert risk.reason is None
             assert risk.changes >= 1  # at least the called-out person comes off
             assert (risk.extra_missing > 0) == (risk.level == "short")
 
@@ -106,6 +109,19 @@ def test_an_unfixable_recorded_callout_is_reported_once(db, published):
 
     assert not after.week_fixable
     assert after.risks == []
+    assert after.blocker == no_fix.reason
+
+
+def test_cancelling_the_callout_makes_the_week_fixable_again(db, published):
+    demo, _ = published
+    report = callout_risk(db, demo.restaurant_id, MONDAY)
+    no_fix = next(r for r in report.risks if r.level == "no_fix")
+    absence = record_absence(db, demo.restaurant_id, no_fix.employee_id, no_fix.shift_id)
+    assert not callout_risk(db, demo.restaurant_id, MONDAY).week_fixable
+
+    cancel_absence(db, demo.restaurant_id, absence.id)
+
+    assert callout_risk(db, demo.restaurant_id, MONDAY).week_fixable
 
 
 def test_needs_a_published_schedule(db):

@@ -77,6 +77,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(response.status, "error", `Request failed (${response.status}).`);
   }
+  if (response.status === 204) return undefined as T; // no content
   return response.json() as Promise<T>;
 }
 
@@ -94,6 +95,7 @@ export type DraftResult = {
   status: string;
   conflicts: string[];
   schedule: Schedule | null;
+  explanation: string | null; // why the call-outs can't be covered
 };
 
 export type CalloutRisk = {
@@ -104,11 +106,13 @@ export type CalloutRisk = {
   level: "covered" | "short" | "no_fix";
   extra_missing: number | null;
   changes: number | null;
+  reason: string | null; // why no repair exists
 };
 
 export type RiskReport = {
   schedule_id: number;
   week_fixable: boolean;
+  blocker: string | null;
   baseline_missing: number;
   checked: number;
   at_risk: number;
@@ -128,6 +132,12 @@ export const api = {
 
   risk: (restaurantId: number, week: string) =>
     request<RiskReport>(`/restaurants/${restaurantId}/weeks/${week}/risk`),
+
+  callouts: (restaurantId: number, week: string) =>
+    request<Callout[]>(`/restaurants/${restaurantId}/weeks/${week}/callouts`),
+
+  cancelCallout: (restaurantId: number, calloutId: number) =>
+    request<void>(`/restaurants/${restaurantId}/callouts/${calloutId}`, { method: "DELETE" }),
 
   callOut: (
     restaurantId: number,

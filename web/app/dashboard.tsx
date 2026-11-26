@@ -6,6 +6,7 @@ import {
   api,
   ApiError,
   type Assignment,
+  type Callout,
   type CalloutRisk,
   type Restaurant,
   type RiskReport,
@@ -16,7 +17,7 @@ import {
 // The demo restaurant's week. Later this will default to the current week.
 const DEMO_WEEK = "2026-11-23";
 
-type WeekData = { shifts: Shift[]; schedule: Schedule | null };
+type WeekData = { shifts: Shift[]; schedule: Schedule | null; callouts: Callout[] };
 
 /** Someone the manager clicked, before confirming the call-out. */
 type Selection = { assignment: Assignment; shift: Shift };
@@ -63,9 +64,10 @@ export function Dashboard() {
         if (e.code === "not_found") return null; // nothing published yet
         throw e;
       }),
+      api.callouts(restaurantId, week),
     ])
-      .then(([shifts, schedule]) => {
-        if (!cancelled) setData({ shifts, schedule });
+      .then(([shifts, schedule, callouts]) => {
+        if (!cancelled) setData({ shifts, schedule, callouts });
       })
       .catch((e: ApiError) => !cancelled && setError(e.message));
 
@@ -114,13 +116,32 @@ export function Dashboard() {
       const result = await api.repair(restaurantId, week);
       if (result.schedule === null) {
         setError(
-          `No repair possible (${result.status}). The call-out is recorded, but ` +
-            "the shift can't be covered without breaking a rule.",
+          `No repair possible. ${result.explanation ?? ""} ` +
+            "The call-out is recorded; cancel it below if plans change.",
         );
       } else {
         setProposal({ draft: result.schedule, calledOut: selection });
       }
       setSelection(null);
+      setReloads((n) => n + 1); // refresh the call-out list
+    } catch (e) {
+      setError((e as ApiError).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancelCallout(callout: Callout) {
+    if (restaurantId === null) return;
+    setBusy("Cancelling call-out…");
+    setError(null);
+    setNotice(null);
+    try {
+      await api.cancelCallout(restaurantId, callout.id);
+      setProposal(null);
+      setRisk(null);
+      setNotice("Call-out cancelled. Repairs and risk checks no longer include it.");
+      setReloads((n) => n + 1);
     } catch (e) {
       setError((e as ApiError).message);
     } finally {
@@ -202,6 +223,15 @@ export function Dashboard() {
       {busy && <Banner tone="slate">{busy}</Banner>}
 
       {risk && !proposal && !busy && <RiskSummary report={risk} onClose={() => setRisk(null)} />}
+
+      {data && data.callouts.length > 0 && !proposal && (
+        <CalloutList
+          callouts={data.callouts}
+          shifts={data.shifts}
+          published={data.schedule}
+          onCancel={busy ? undefined : cancelCallout}
+        />
+      )}
 
       {selection && !busy && (
         <CalloutPanel
@@ -584,7 +614,7 @@ function RiskSummary({ report, onClose }: { report: RiskReport; onClose: () => v
         <strong>Call-out risk</strong>
         <span>
           A call-out already recorded this week can&apos;t be covered, so no repair is possible
-          right now. Find extra staff for that shift first, then check again.
+          right now. {report.blocker}
         </span>
         <button className="ml-auto text-red-700 hover:underline" onClick={onClose}>
           Hide
@@ -614,6 +644,49 @@ function RiskSummary({ report, onClose }: { report: RiskReport; onClose: () => v
   );
 }
 
+function CalloutList({
+  callouts,
+  shifts,
+  published,
+  onCancel,
+}: {
+  callouts: Callout[];
+  shifts: Shift[];
+  published: Schedule | null;
+  onCancel?: (callout: Callout) => void;
+}) {
+  const names = published ? nameLookup(published) : new Map<number, string>();
+
+  return (
+    <div className="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
+      <strong className="mr-3">Call-outs this week</strong>
+      <ul className="mt-1 space-y-1">
+        {callouts.map((callout) => {
+          const shift = shifts.find((s) => s.id === callout.shift_id);
+          return (
+            <li key={callout.id} className="flex items-center gap-3">
+              <span>
+                {names.get(callout.employee_id) ?? `#${callout.employee_id}`} ·{" "}
+                {shift ? shiftName(shift) : `shift ${callout.shift_id}`}
+                {callout.rest_of_day && <span className="text-slate-500"> (rest of day)</span>}
+                {callout.note && <span className="text-slate-500"> · {callout.note}</span>}
+              </span>
+              {onCancel && (
+                <button
+                  className="text-slate-600 hover:text-red-700 hover:underline"
+                  onClick={() => onCancel(callout)}
+                >
+                  Cancel
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function riskLookup(report: RiskReport): RiskLookup {
   return new Map(report.risks.map((r) => [`${r.shift_id}-${r.employee_id}`, r]));
 }
@@ -627,7 +700,7 @@ function riskBackground(risk: CalloutRisk | undefined): string {
 function riskTitle(name: string, risk: CalloutRisk | undefined): string {
   if (!risk) return "Record a call-out";
   if (risk.level === "no_fix") {
-    return `If ${name} calls out, no repair keeps this week within its minimum staffing.`;
+    return risk.reason ?? `If ${name} calls out, no repair keeps this week within its minimum staffing.`;
   }
   if (risk.level === "short") {
     return `If ${name} calls out, the best repair leaves ${risk.extra_missing} more position(s) short.`;

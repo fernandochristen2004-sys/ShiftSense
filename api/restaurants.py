@@ -42,11 +42,13 @@ from api.stored_schemas import (
 )
 from db import models as db
 from services.loading import load_restaurant
+from services.explanations import explain_recorded_callouts
 from services.risk import callout_risk
 from services.scheduling import (
     DraftOutcome,
     ShortagesNotAcceptedError,
     StaleScheduleError,
+    cancel_absence,
     current_published,
     generate_draft,
     publish_schedule,
@@ -394,6 +396,20 @@ def list_callouts(
     return [_callout_out(absence) for absence in absences]
 
 
+@router.delete(
+    "/{restaurant_id}/callouts/{callout_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def delete_callout(
+    restaurant_id: int,
+    callout_id: int,
+    session: Session = Depends(get_session),
+) -> None:
+    """Cancel a recorded call-out. Repairs from now on ignore it."""
+    with _service_errors():
+        cancel_absence(session, restaurant_id, callout_id)
+        session.commit()
+
+
 @router.post("/{restaurant_id}/weeks/{week_start}/repair", response_model=DraftResponse)
 def repair_week(
     restaurant_id: int,
@@ -409,6 +425,8 @@ def repair_week(
     with _service_errors():
         outcome = repair_published(session, restaurant_id, week_start, request.deterministic)
         response = _draft_response(session, outcome)
+        if outcome.schedule is None:
+            response.explanation = explain_recorded_callouts(session, restaurant_id, week_start)
     session.commit()
     return response
 
@@ -434,6 +452,7 @@ def get_callout_risk(
     return RiskReportOut(
         schedule_id=report.schedule_id,
         week_fixable=report.week_fixable,
+        blocker=report.blocker,
         baseline_missing=report.baseline_missing,
         checked=len(report.risks),
         at_risk=len(report.at_risk),
@@ -446,6 +465,7 @@ def get_callout_risk(
                 level=risk.level,
                 extra_missing=risk.extra_missing,
                 changes=risk.changes,
+                reason=risk.reason,
             )
             for risk in report.risks
         ],

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from optimizer import engine
 from optimizer.models import ScheduleResult
 from services.callouts import exclusions_for_callouts, merge_exclusions
+from services.explanations import explain_exclusions
 from services.loading import WeekInputs, load_restaurant, load_week
 from services.scheduling import current_published, full_original_schedule, week_callouts
 from services.weeks import week_bounds
@@ -38,6 +39,7 @@ class CalloutRisk:
     level: RiskLevel
     extra_missing: int | None  # positions left unfilled; None when no repair exists
     changes: int | None        # changes the repair needs; None when no repair exists
+    reason: str | None = None  # why no repair exists (no_fix only)
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class RiskReport:
     baseline_missing: int  # positions already short before any new call-out
     risks: list[CalloutRisk]
     week_fixable: bool = True  # False: recorded call-outs already can't be repaired
+    blocker: str | None = None  # why, when week_fixable is False
 
     @property
     def at_risk(self) -> list[CalloutRisk]:
@@ -102,19 +105,26 @@ def callout_risk(
         if employee_id not in recorded.get(shift_id, [])
     ]
 
-    def simulate(candidate) -> ScheduleResult:
+    def excluded_with(candidate):
         shift_id, _, employee_id = candidate
         simulated = exclusions_for_callouts(
             [(employee_id, shifts_by_id[shift_id], True)], inputs.shifts, inputs.timezone
         )
-        return _repair(inputs, original, merge_exclusions(recorded, simulated))
+        return merge_exclusions(recorded, simulated)
+
+    def simulate(candidate) -> ScheduleResult:
+        return _repair(inputs, original, excluded_with(candidate))
 
     # If the call-outs already recorded can't be repaired, every simulation
     # would fail too and the report would mark everyone. Say so instead.
     baseline = _repair(inputs, original, recorded)
     if baseline.assignments is None:
         return RiskReport(
-            schedule_id=published.id, baseline_missing=0, risks=[], week_fixable=False
+            schedule_id=published.id,
+            baseline_missing=0,
+            risks=[],
+            week_fixable=False,
+            blocker=explain_exclusions(inputs, original, recorded),
         )
     baseline_missing = _missing(baseline)
 
@@ -125,7 +135,10 @@ def callout_risk(
     risks = []
     for (shift_id, role, employee_id), result in zip(candidates, results):
         if result.assignments is None:
-            risks.append(CalloutRisk(shift_id, employee_id, role, "no_fix", None, None))
+            reason = explain_exclusions(
+                inputs, original, excluded_with((shift_id, role, employee_id))
+            )
+            risks.append(CalloutRisk(shift_id, employee_id, role, "no_fix", None, None, reason))
             continue
         extra = max(0, _missing(result) - baseline_missing)
         risks.append(CalloutRisk(

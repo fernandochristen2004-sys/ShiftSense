@@ -276,6 +276,19 @@ def record_absence(
     return absence
 
 
+def cancel_absence(session: Session, restaurant_id: int, absence_id: int) -> None:
+    """Remove a recorded call-out, e.g. when the person can work after all.
+
+    Future repairs stop taking it into account. A repair that was already
+    published stays as it is: publishing a new repair is the way to change it.
+    """
+    absence = session.get(db.Absence, absence_id)
+    if absence is None or absence.restaurant_id != restaurant_id:
+        raise LookupError(f"Call-out {absence_id} not found.")
+    session.delete(absence)
+    session.flush()
+
+
 def week_callouts(session: Session, inputs: WeekInputs):
     """Absences affecting the week, as (employee_id, shift, rest_of_day).
 

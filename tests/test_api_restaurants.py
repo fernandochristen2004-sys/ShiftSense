@@ -408,6 +408,16 @@ def test_dashboard_origin_is_allowed(client):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+def test_dashboard_can_use_every_method_the_api_has(client, method):
+    response = client.options(
+        "/restaurants/1/callouts/1",
+        headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": method},
+    )
+    assert response.status_code == 200
+    assert method in response.headers["access-control-allow-methods"]
+
+
 def test_other_origins_are_not_allowed(client):
     response = client.get("/health", headers={"Origin": "http://evil.example"})
     assert "access-control-allow-origin" not in response.headers
@@ -438,3 +448,48 @@ def test_risk_report(client, demo):
     assert body["checked"] == len(published["assignments"]) == len(body["risks"])
     assert body["at_risk"] == sum(r["level"] != "covered" for r in body["risks"])
     assert all(r["employee_name"] for r in body["risks"])
+
+
+# Cancelling call-outs and explaining failed repairs
+
+def test_cancelling_a_callout(client, demo):
+    published = _publish(client, demo, _draft(client, demo))
+    shift_id, employee_id = pick_callout(_engine_format(published), seed=0)
+    callout = client.post(
+        _base(demo) + "/callouts", json={"shift_id": shift_id, "employee_id": employee_id},
+    ).json()
+
+    response = client.delete(_base(demo) + f"/callouts/{callout['id']}")
+
+    assert response.status_code == 204
+    assert client.get(_base(demo) + WEEK + "/callouts").json() == []
+    assert client.delete(_base(demo) + f"/callouts/{callout['id']}").status_code == 404
+
+
+def test_callouts_are_private_to_their_restaurant(client, db, demo):
+    published = _publish(client, demo, _draft(client, demo))
+    shift_id, employee_id = pick_callout(_engine_format(published), seed=0)
+    callout = client.post(
+        _base(demo) + "/callouts", json={"shift_id": shift_id, "employee_id": employee_id},
+    ).json()
+    other = seed_demo_restaurant(db, employee_count=10, name="Other Bistro")
+
+    response = client.delete(f"/restaurants/{other.restaurant_id}/callouts/{callout['id']}")
+
+    assert response.status_code == 404
+
+
+def test_failed_repair_explains_why(client, demo):
+    _publish(client, demo, _draft(client, demo))
+    risks = client.get(_base(demo) + WEEK + "/risk").json()["risks"]
+    no_fix = next(r for r in risks if r["level"] == "no_fix")
+    client.post(
+        _base(demo) + "/callouts",
+        json={"shift_id": no_fix["shift_id"], "employee_id": no_fix["employee_id"]},
+    )
+
+    body = client.post(_base(demo) + WEEK + "/repair", json={"deterministic": True}).json()
+
+    assert body["schedule"] is None
+    assert body["explanation"] == no_fix["reason"]
+    assert no_fix["employee_name"] in body["explanation"]

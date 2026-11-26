@@ -32,7 +32,7 @@ CORS_ORIGINS = os.environ.get(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in CORS_ORIGINS if origin.strip()],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
 app.include_router(restaurants_router)

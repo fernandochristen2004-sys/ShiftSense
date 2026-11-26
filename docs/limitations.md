@@ -33,8 +33,13 @@ boundaries of the current scheduling engine.
 - **Lock conflict diagnostics** explain direct conflicts with positive
   locks only. Infeasibility caused by negative locks or combinations of
   constraints returns INFEASIBLE without a detailed explanation.
-- **Infeasible repairs** (for example, a call-out that makes a hard
-  staffing minimum impossible) are not yet explained to the manager.
+- **"Why no fix" explanations check one person at a time.** For each gap,
+  they list everyone with the right skill and the first rule that keeps
+  them out of the current schedule. When each gap has someone free on its
+  own but the gaps can't all be filled together, the explanation says so
+  but doesn't name the exact conflict. CP-SAT can report conflicting
+  constraints (assumptions / sufficient assumptions for infeasibility);
+  using that would give exact explanations.
 
 ## Testing and benchmarks
 

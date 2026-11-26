@@ -73,6 +73,9 @@ class DraftResponse(ApiModel):
     conflicts: list[str]
     stage_statuses: dict[str, str]
     schedule: ScheduleDetail | None = Field(description="null when nothing was saved")
+    explanation: str | None = Field(
+        default=None, description="Repairs only: why the call-outs can't be covered",
+    )
 
 
 class CalloutOut(ApiModel):
@@ -119,6 +122,7 @@ class CalloutRiskOut(ApiModel):
     level: str = Field(description="covered, short (positions left unfilled) or no_fix")
     extra_missing: int | None = Field(description="Positions left unfilled; null when no fix exists")
     changes: int | None = Field(description="Changes the repair needs; null when no fix exists")
+    reason: str | None = Field(description="Why no repair exists (no_fix only)")
 
 
 class RiskReportOut(ApiModel):
@@ -126,6 +130,7 @@ class RiskReportOut(ApiModel):
     week_fixable: bool = Field(
         description="False when call-outs already recorded can't be repaired; risks is then empty",
     )
+    blocker: str | None = Field(description="Why the week can't be fixed, when week_fixable is false")
     baseline_missing: int = Field(description="Positions already short before any new call-out")
     checked: int = Field(description="Assignments simulated")
     at_risk: int = Field(description="Call-outs that would leave the week worse off")
