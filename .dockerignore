@@ -1,0 +1,16 @@
+# Only the API goes into the image; keep everything else out.
+.git
+.github
+.venv
+venv
+web
+tests
+docs
+scripts
+**/__pycache__
+**/*.pyc
+.pytest_cache
+node_modules
+*.png
+.env
+.env.*

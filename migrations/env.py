@@ -20,7 +20,7 @@ if config.config_file_name is not None:
 
 # Tests can pass their own URL; otherwise use the app's setting.
 if not config.get_main_option("sqlalchemy.url", "").startswith("postgresql"):
-    config.set_main_option("sqlalchemy.url", database_url())
+    config.set_main_option("sqlalchemy.url", database_url().replace("%", "%%"))
 
 target_metadata = Base.metadata
 

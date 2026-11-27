@@ -32,6 +32,7 @@ from services.accounts import (
     start_session,
     user_for_token,
 )
+from services.cleanup import clean_up_guests
 
 COOKIE = "shiftsense_session"
 SECURE_COOKIES = os.environ.get("SHIFTSENSE_SECURE_COOKIES", "false").lower() == "true"
@@ -181,7 +182,12 @@ def login(
 
 @router.post("/guest", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def guest(response: Response, session: Session = Depends(get_session)) -> UserOut:
-    """Try ShiftSense without an account. Sign up later to keep what you made."""
+    """Try ShiftSense without an account. Sign up later to keep what you made.
+
+    Each new guest also clears out a few guests older than a week, so demos
+    don't pile up without needing a scheduled job.
+    """
+    clean_up_guests(session)
     user = create_guest(session)
     _log_in_browser(response, session, user)
     session.commit()
