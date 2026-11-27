@@ -5,6 +5,13 @@ export function addDays(isoDate: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** Monday of the current week, as "YYYY-MM-DD", in the browser's own calendar. */
+export function thisMonday(): string {
+  const now = new Date();
+  const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  return addDays(today.toISOString().slice(0, 10), -((today.getUTCDay() + 6) % 7));
+}
+
 export function formatDate(isoDate: string): string {
   return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-GB", {
     day: "numeric",
@@ -83,4 +90,9 @@ export function describeWindow(
     hours,
     overnight,
   };
+}
+
+/** "1 shift", "3 shifts". */
+export function shiftCount(n: number): string {
+  return `${n} shift${n === 1 ? "" : "s"}`;
 }

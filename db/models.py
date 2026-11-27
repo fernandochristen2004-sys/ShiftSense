@@ -59,6 +59,9 @@ class Restaurant(Base):
     id: Mapped[int] = _id()
     name: Mapped[str] = mapped_column(Text)
     timezone: Mapped[str] = mapped_column(Text, comment="IANA name, e.g. Asia/Colombo")
+    is_demo: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), comment="Sample data to try the app with"
+    )
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -485,3 +488,24 @@ class Absence(Base):
         ),
         UniqueConstraint("employee_id", "shift_id"),
     )
+
+
+class ShiftTemplate(Base):
+    """A saved week of shift needs, to start a new week from.
+
+    `shifts` is a list of {"weekday": 0-6, "start_time": "HH:MM", "end_time": "HH:MM",
+    "label": str | null, "requirements": [{"role": str, "count": int, "min_count": int}]},
+    in restaurant time. Roles are stored by name and checked when the template is used.
+    """
+
+    __tablename__ = "shift_templates"
+
+    id: Mapped[int] = _id()
+    restaurant_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("restaurants.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(Text)
+    shifts: Mapped[list] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (UniqueConstraint("restaurant_id", "name"),)

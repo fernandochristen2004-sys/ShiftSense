@@ -353,13 +353,16 @@ def test_outdated_repair_is_refused(client, db, demo):
 def test_listing_restaurants(client, demo):
     response = client.get("/restaurants")
     assert response.status_code == 200
-    assert {"id": demo.restaurant_id, "name": "Demo Bistro", "timezone": "UTC"} in response.json()
+    expected = {"id": demo.restaurant_id, "name": "Demo Bistro", "timezone": "UTC", "is_demo": True}
+    assert expected in response.json()
 
 
 def test_getting_a_restaurant(client, demo):
     response = client.get(_base(demo))
     assert response.status_code == 200
-    assert response.json() == {"id": demo.restaurant_id, "name": "Demo Bistro", "timezone": "UTC"}
+    assert response.json() == {
+        "id": demo.restaurant_id, "name": "Demo Bistro", "timezone": "UTC", "is_demo": True,
+    }
 
 
 def test_unknown_restaurant_details_are_404(client):

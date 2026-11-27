@@ -12,11 +12,26 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_session
 from api.errors import error, service_errors
-from api.shift_schemas import RequirementIn, ShiftIn, ShiftUpdate
+from api.shift_schemas import (
+    ApplyTemplateIn,
+    CopyWeekIn,
+    RequirementIn,
+    ShiftIn,
+    ShiftUpdate,
+    TemplateIn,
+    TemplateOut,
+)
 from api.stored_schemas import RequirementOut, ShiftOut
 from db import models as db
 from services.loading import load_restaurant
 from services.shifts import Need, create_shift, remove_shift, shift_needs, update_shift
+from services.week_plans import (
+    apply_template,
+    copy_week,
+    delete_template,
+    list_templates,
+    save_template,
+)
 from services.weeks import week_bounds
 
 router = APIRouter(prefix="/restaurants", tags=["shifts"])
@@ -135,5 +150,93 @@ def delete_shift(
     """
     with service_errors():
         remove_shift(session, restaurant_id, shift_id)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# Starting a week from another one
+
+def _created(session: Session, restaurant_id: int, shifts: list[db.Shift]) -> list[ShiftOut]:
+    tz = ZoneInfo(load_restaurant(session, restaurant_id).timezone)
+    return shift_outs(session, shifts, tz)
+
+
+@router.post(
+    "/{restaurant_id}/weeks/{week_start}/copy-shifts",
+    response_model=list[ShiftOut],
+    status_code=status.HTTP_201_CREATED,
+)
+def copy_shifts(
+    restaurant_id: int,
+    week_start: date,
+    request: CopyWeekIn,
+    session: Session = Depends(get_session),
+) -> list[ShiftOut]:
+    """Copy another week's shifts and their needs (not who works them) into this empty week.
+
+    A week that already has shifts is a 409 conflict, so nothing is doubled.
+    """
+    with service_errors():
+        shifts = copy_week(session, restaurant_id, request.from_week, week_start)
+        session.commit()
+        return _created(session, restaurant_id, shifts)
+
+
+def _template_out(template: db.ShiftTemplate) -> TemplateOut:
+    return TemplateOut(
+        id=template.id,
+        name=template.name,
+        shift_count=len(template.shifts),
+        created_at=template.created_at,
+    )
+
+
+@router.get("/{restaurant_id}/templates", response_model=list[TemplateOut])
+def get_templates(restaurant_id: int, session: Session = Depends(get_session)) -> list[TemplateOut]:
+    """Saved weeks of shifts, A to Z."""
+    with service_errors():
+        return [_template_out(t) for t in list_templates(session, restaurant_id)]
+
+
+@router.post(
+    "/{restaurant_id}/templates", response_model=TemplateOut, status_code=status.HTTP_201_CREATED,
+)
+def add_template(
+    restaurant_id: int, request: TemplateIn, session: Session = Depends(get_session)
+) -> TemplateOut:
+    """Save a week's shifts and needs as a template, to start other weeks from."""
+    with service_errors():
+        template = save_template(session, restaurant_id, request.name, request.week_start)
+        session.commit()
+        return _template_out(template)
+
+
+@router.post(
+    "/{restaurant_id}/weeks/{week_start}/apply-template",
+    response_model=list[ShiftOut],
+    status_code=status.HTTP_201_CREATED,
+)
+def use_template(
+    restaurant_id: int,
+    week_start: date,
+    request: ApplyTemplateIn,
+    session: Session = Depends(get_session),
+) -> list[ShiftOut]:
+    """Fill this empty week with a template's shifts. A week with shifts is a 409 conflict."""
+    with service_errors():
+        shifts = apply_template(session, restaurant_id, request.template_id, week_start)
+        session.commit()
+        return _created(session, restaurant_id, shifts)
+
+
+@router.delete(
+    "/{restaurant_id}/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT,
+)
+def remove_template(
+    restaurant_id: int, template_id: int, session: Session = Depends(get_session)
+) -> Response:
+    """Delete a template. Weeks made from it keep their shifts."""
+    with service_errors():
+        delete_template(session, restaurant_id, template_id)
         session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -184,10 +184,19 @@ class CalloutOut(ApiModel):
 
 # Restaurant and week data, for the dashboard
 
+class RestaurantIn(ApiModel):
+    name: str = Field(min_length=1, max_length=80, examples=["Lotus Kitchen"])
+    timezone: str = Field(examples=["Asia/Colombo"], description="IANA timezone name")
+    roles: list[str] = Field(
+        default_factory=list, max_length=30, examples=[["cook", "server", "host"]],
+    )
+
+
 class RestaurantOut(ApiModel):
     id: int
     name: str
     timezone: str = Field(description="IANA name; local times below use it")
+    is_demo: bool = Field(default=False, description="Sample data to try the app with")
 
 
 class RequirementOut(ApiModel):

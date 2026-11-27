@@ -1,6 +1,6 @@
 """JSON models for managing shifts."""
 
-from datetime import date, time
+from datetime import date, datetime, time
 
 from pydantic import Field
 
@@ -35,3 +35,23 @@ class ShiftUpdate(ApiModel):
     end_time: time | None = None
     label: str | None = Field(default=None, max_length=60)
     requirements: list[RequirementIn] | None = Field(default=None, min_length=1, max_length=20)
+
+
+class CopyWeekIn(ApiModel):
+    from_week: date = Field(description="Monday of the week to copy shifts from")
+
+
+class TemplateIn(ApiModel):
+    name: str = Field(min_length=1, max_length=60, examples=["Normal week"])
+    week_start: date = Field(description="Monday of the week whose shifts to save")
+
+
+class ApplyTemplateIn(ApiModel):
+    template_id: int
+
+
+class TemplateOut(ApiModel):
+    id: int
+    name: str
+    shift_count: int
+    created_at: datetime

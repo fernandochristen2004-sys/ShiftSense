@@ -30,6 +30,7 @@ from api.stored_schemas import (
     PublishRequest,
     RepairOptionOut,
     RepairRequest,
+    RestaurantIn,
     RestaurantOut,
     RiskReportOut,
     ScheduleDetail,
@@ -43,6 +44,7 @@ from optimizer.explain import REASON_ORDER
 from services.explanations import CalloutExplanation, explain_recorded_callouts
 from services.feasibility import Blocker, week_blockers
 from services.options import repair_options
+from services.restaurants import create_demo, create_restaurant
 from services.risk import callout_risk
 from services.scheduling import (
     DraftOutcome,
@@ -207,7 +209,12 @@ def _schedule(session: Session, restaurant_id: int, schedule_id: int) -> db.Sche
 # Restaurants and their weeks
 
 def _restaurant_out(restaurant: db.Restaurant) -> RestaurantOut:
-    return RestaurantOut(id=restaurant.id, name=restaurant.name, timezone=restaurant.timezone)
+    return RestaurantOut(
+        id=restaurant.id,
+        name=restaurant.name,
+        timezone=restaurant.timezone,
+        is_demo=restaurant.is_demo,
+    )
 
 
 @router.get("", response_model=list[RestaurantOut])
@@ -215,6 +222,32 @@ def list_restaurants(session: Session = Depends(get_session)) -> list[Restaurant
     """Every restaurant, oldest first."""
     restaurants = session.scalars(select(db.Restaurant).order_by(db.Restaurant.id)).all()
     return [_restaurant_out(restaurant) for restaurant in restaurants]
+
+
+@router.post("", response_model=RestaurantOut, status_code=status.HTTP_201_CREATED)
+def add_restaurant(
+    request: RestaurantIn, session: Session = Depends(get_session)
+) -> RestaurantOut:
+    """Start an empty restaurant: its name, timezone and roles. Staff and shifts come next."""
+    with service_errors():
+        restaurant = create_restaurant(session, request.name, request.timezone, request.roles)
+        session.commit()
+        return _restaurant_out(restaurant)
+
+
+@router.post("/demo", response_model=RestaurantOut)
+def open_demo_restaurant(
+    reset: bool = False, session: Session = Depends(get_session)
+) -> RestaurantOut:
+    """The demo bistro: 25 staff and a week of shifts (week of 23 Nov 2026), to try things out.
+
+    There's one demo. This returns it, making it the first time; reset=true
+    starts a fresh copy (older copies are kept but no longer used).
+    """
+    with service_errors():
+        restaurant = create_demo(session, reset=reset)
+        session.commit()
+        return _restaurant_out(restaurant)
 
 
 @router.get("/{restaurant_id}", response_model=RestaurantOut)

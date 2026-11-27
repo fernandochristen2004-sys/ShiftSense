@@ -3,7 +3,7 @@
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
-export type Restaurant = { id: number; name: string; timezone: string };
+export type Restaurant = { id: number; name: string; timezone: string; is_demo: boolean };
 
 export type Requirement = { role: string; count: number; min_count: number };
 
@@ -206,6 +206,13 @@ export type Availability = {
   exceptions: DateException[];
 };
 
+// Starting out
+
+export type RestaurantIn = { name: string; timezone: string; roles: string[] };
+
+/** A saved week of shift needs. */
+export type Template = { id: number; name: string; shift_count: number; created_at: string };
+
 // Shifts
 
 export type ShiftIn = {
@@ -321,4 +328,24 @@ export const api = {
     send<Shift>("PATCH", `/restaurants/${restaurantId}/shifts/${shiftId}`, body),
   deleteShift: (restaurantId: number, shiftId: number) =>
     request<void>(`/restaurants/${restaurantId}/shifts/${shiftId}`, { method: "DELETE" }),
+
+  // Starting out
+  createRestaurant: (body: RestaurantIn) => post<Restaurant>("/restaurants", body),
+  /** The one demo bistro (made the first time); reset = a fresh copy. */
+  openDemo: (reset = false) => post<Restaurant>(`/restaurants/demo?reset=${reset}`),
+
+  copyShifts: (restaurantId: number, week: string, fromWeek: string) =>
+    post<Shift[]>(`/restaurants/${restaurantId}/weeks/${week}/copy-shifts`, {
+      from_week: fromWeek,
+    }),
+  templates: (restaurantId: number) =>
+    request<Template[]>(`/restaurants/${restaurantId}/templates`),
+  saveTemplate: (restaurantId: number, name: string, week: string) =>
+    post<Template>(`/restaurants/${restaurantId}/templates`, { name, week_start: week }),
+  applyTemplate: (restaurantId: number, week: string, templateId: number) =>
+    post<Shift[]>(`/restaurants/${restaurantId}/weeks/${week}/apply-template`, {
+      template_id: templateId,
+    }),
+  deleteTemplate: (restaurantId: number, templateId: number) =>
+    request<void>(`/restaurants/${restaurantId}/templates/${templateId}`, { method: "DELETE" }),
 };

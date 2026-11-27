@@ -17,16 +17,26 @@ import {
   type RiskReport,
   type Schedule,
   type Shift,
+  type Template,
 } from "@/lib/api";
-import { addDays, formatDate, formatDay, showTime } from "@/lib/dates";
+import { addDays, formatDate, formatDay, shiftCount, showTime, thisMonday } from "@/lib/dates";
 
+import { Checklist, EmptyWeek, SaveTemplate } from "./getting-started";
+import { SetupScreen } from "./setup";
 import { ShiftEditor } from "./shift-editor";
 import { StaffPage } from "./staff";
 
 // The demo restaurant's week. Later this will default to the current week.
 const DEMO_WEEK = "2026-11-23";
 
-type WeekData = { shifts: Shift[]; schedule: Schedule | null; callouts: Callout[] };
+type WeekData = {
+  shifts: Shift[];
+  schedule: Schedule | null;
+  callouts: Callout[];
+  staffCount: number;
+  lastWeekShifts: number;
+  templates: Template[];
+};
 
 /** Someone the manager clicked, before confirming the call-out. */
 type Selection = { assignment: Assignment; shift: Shift };
@@ -48,7 +58,9 @@ type RiskLookup = Map<string, CalloutRisk>;
 
 export function Dashboard() {
   const [tab, setTab] = useState<"schedule" | "staff">("schedule");
-  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
+  // A manager has one restaurant ("mine"); the demo bistro is a separate place to try things.
+  const [mine, setMine] = useState<Restaurant | null>(null);
+  const [demo, setDemo] = useState<Restaurant | null>(null); // set while in the demo
   const [restaurantId, setRestaurantId] = useState<number | null>(null);
   const [week, setWeek] = useState(DEMO_WEEK);
   const [data, setData] = useState<WeekData | null>(null);
@@ -65,24 +77,33 @@ export function Dashboard() {
     title: string;
     callOut?: Selection;
   } | null>(null);
+  const [setup, setSetup] = useState(false); // the "Set up your restaurant" screen
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Load the restaurant list once and pick the newest (the latest demo seed).
+  // Open on your restaurant: the newest one that isn't a demo. None yet: setup.
   useEffect(() => {
     api
       .restaurants()
       .then((list) => {
-        setRestaurants(list);
-        if (list.length > 0) setRestaurantId(list[list.length - 1].id);
+        const own = list.filter((r) => !r.is_demo).at(-1) ?? null;
+        setMine(own);
+        if (own) {
+          setRestaurantId(own.id);
+          setWeek(thisMonday());
+        } else {
+          setSetup(true);
+        }
       })
       .catch((e: ApiError) => setError(e.message));
   }, []);
 
-  // Load the week's shifts and published schedule when the selection changes.
+  // Load the week's shifts and published schedule when the selection changes,
+  // and again on coming back to the schedule (staff may have changed meanwhile).
   useEffect(() => {
-    if (restaurantId === null) return;
+    if (restaurantId === null || tab !== "schedule") return;
     let cancelled = false;
 
     Promise.all([
@@ -92,16 +113,28 @@ export function Dashboard() {
         throw e;
       }),
       api.callouts(restaurantId, week),
+      api.employees(restaurantId),
+      api.shifts(restaurantId, addDays(week, -7)),
+      api.templates(restaurantId),
     ])
-      .then(([shifts, schedule, callouts]) => {
-        if (!cancelled) setData({ shifts, schedule, callouts });
+      .then(([shifts, schedule, callouts, staff, lastWeek, templates]) => {
+        if (!cancelled) {
+          setData({
+            shifts,
+            schedule,
+            callouts,
+            staffCount: staff.length,
+            lastWeekShifts: lastWeek.length,
+            templates,
+          });
+        }
       })
       .catch((e: ApiError) => !cancelled && setError(e.message));
 
     return () => {
       cancelled = true;
     };
-  }, [restaurantId, week, reloads]);
+  }, [restaurantId, week, reloads, tab]);
 
   function changeView(update: () => void) {
     update();
@@ -109,6 +142,7 @@ export function Dashboard() {
     setProposal(null);
     setUpdate(null);
     setEditing(null);
+    setSavingTemplate(false);
     setRisk(null);
     setWhy(null);
     setError(null);
@@ -321,20 +355,143 @@ export function Dashboard() {
     }
   }
 
-  const restaurant = restaurants.find((r) => r.id === restaurantId);
+  /** Run a week-building action, then reload and say what happened. */
+  async function buildWeek(label: string, action: () => Promise<string>) {
+    setBusy(label);
+    setError(null);
+    setNotice(null);
+    try {
+      setNotice(await action());
+      setSavingTemplate(false);
+      setReloads((n) => n + 1);
+    } catch (e) {
+      setError((e as ApiError).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const copyLastWeek = () =>
+    buildWeek("Copying last week's shifts…", async () => {
+      const shifts = await api.copyShifts(restaurantId!, week, addDays(week, -7));
+      return `Copied ${shiftCount(shifts.length)} from last week. Click Create schedule to staff them.`;
+    });
+
+  const useTemplate = (template: Template) =>
+    buildWeek(`Adding "${template.name}"…`, async () => {
+      const shifts = await api.applyTemplate(restaurantId!, week, template.id);
+      return `Added ${shiftCount(shifts.length)} from "${template.name}". Click Create schedule to staff them.`;
+    });
+
+  const deleteTemplate = (template: Template) =>
+    buildWeek("Deleting template…", async () => {
+      await api.deleteTemplate(restaurantId!, template.id);
+      return `Deleted the template "${template.name}". Weeks made from it keep their shifts.`;
+    });
+
+  const saveTemplate = (name: string) =>
+    buildWeek("Saving template…", async () => {
+      const template = await api.saveTemplate(restaurantId!, name, week);
+      return `Saved "${template.name}" (${shiftCount(template.shift_count)}). Use it on any empty week.`;
+    });
+
+  function created(restaurant: Restaurant, isDemo: boolean) {
+    if (isDemo) {
+      enterDemo(restaurant);
+      return;
+    }
+    setMine(restaurant);
+    changeView(() => {
+      setDemo(null);
+      setRestaurantId(restaurant.id);
+      setWeek(thisMonday());
+      setTab("schedule");
+      setSetup(false);
+    });
+  }
+
+  function enterDemo(restaurant: Restaurant) {
+    changeView(() => {
+      setDemo(restaurant);
+      setRestaurantId(restaurant.id);
+      setWeek(DEMO_WEEK);
+      setTab("schedule");
+      setSetup(false);
+    });
+  }
+
+  async function openDemo(reset: boolean) {
+    setBusy(reset ? "Making a fresh demo…" : "Opening the demo…");
+    setError(null);
+    try {
+      enterDemo(await api.openDemo(reset));
+      if (reset) setNotice("Fresh demo ready: everything is back to the start.");
+    } catch (e) {
+      setError((e as ApiError).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** Leave the demo: back to your restaurant, or to setup if you haven't made one. */
+  function leaveDemo() {
+    changeView(() => {
+      setDemo(null);
+      setTab("schedule");
+      if (mine) {
+        setRestaurantId(mine.id);
+        setWeek(thisMonday());
+      } else {
+        setRestaurantId(null);
+        setSetup(true);
+      }
+    });
+  }
+
+  const restaurant = demo ?? mine;
   const reviewing = proposal !== null || update !== null;
 
   return (
     <main className="mx-auto max-w-7xl p-6">
+      {demo && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">
+          <span className="grow">
+            You&apos;re in the demo: a made-up bistro to try things out.
+            {mine && ` Nothing here touches ${mine.name}.`}
+          </span>
+          <button
+            className="rounded-md border border-amber-400 bg-white px-3 py-1 hover:bg-amber-100"
+            onClick={leaveDemo}
+          >
+            ← {mine ? `Back to ${mine.name}` : "Back to setup"}
+          </button>
+          <button
+            className="rounded-md border border-amber-400 bg-white px-3 py-1 hover:bg-amber-100"
+            onClick={() => openDemo(true)}
+            title="Start the demo again from scratch"
+          >
+            Reset demo
+          </button>
+        </div>
+      )}
+
       <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">ShiftSense</h1>
           <p className="text-sm text-slate-500">
-            {restaurant ? `${restaurant.name} · ${restaurant.timezone}` : "Loading…"}
+            {setup
+              ? "New restaurant"
+              : restaurant
+                ? `${restaurant.name} · ${restaurant.timezone}`
+                : "Loading…"}
           </p>
         </div>
 
-        <nav className="flex rounded-md border border-slate-300 bg-white p-0.5 text-sm">
+        <nav
+          className={`flex rounded-md border border-slate-300 bg-white p-0.5 text-sm ${
+            setup ? "invisible" : ""
+          }`}
+        >
           {(["schedule", "staff"] as const).map((name) => (
             <button
               key={name}
@@ -349,20 +506,17 @@ export function Dashboard() {
         </nav>
 
         <div className="flex items-center gap-3">
-          <select
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm"
-            value={restaurantId ?? ""}
-            onChange={(e) => changeView(() => setRestaurantId(Number(e.target.value)))}
-            aria-label="Restaurant"
-          >
-            {restaurants.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name} (#{r.id})
-              </option>
-            ))}
-          </select>
+          {!setup && !demo && mine && (
+            <button
+              className="text-sm text-sky-800 hover:underline"
+              onClick={() => openDemo(false)}
+              title="A made-up bistro with 25 staff, to try call-outs and repairs safely"
+            >
+              Try the demo
+            </button>
+          )}
 
-          {tab === "schedule" && (
+          {tab === "schedule" && !setup && (
             <div className="flex items-center rounded-md border border-slate-300 bg-white text-sm">
               <button
                 className="px-3 py-1.5 hover:bg-slate-100"
@@ -384,9 +538,13 @@ export function Dashboard() {
         </div>
       </header>
 
-      {tab === "staff" && restaurantId !== null && <StaffPage restaurantId={restaurantId} />}
+      {setup && <SetupScreen onCreated={created} />}
 
-      {tab === "schedule" && (
+      {!setup && tab === "staff" && restaurantId !== null && (
+        <StaffPage restaurantId={restaurantId} />
+      )}
+
+      {!setup && tab === "schedule" && (
         <>
           {error && <Banner tone="red">{error}</Banner>}
           {notice && <Banner tone="green">{notice}</Banner>}
@@ -445,7 +603,17 @@ export function Dashboard() {
             />
           )}
 
-          {data && !reviewing && !busy && restaurantId !== null && (
+          {data && restaurant && data.lastWeekShifts === 0 && !reviewing && (
+            <Checklist
+              name={restaurant.name}
+              staffCount={data.staffCount}
+              shiftCount={data.shifts.length}
+              published={data.schedule !== null}
+              onAddStaff={() => changeView(() => setTab("staff"))}
+            />
+          )}
+
+          {data && data.shifts.length > 0 && !reviewing && !busy && restaurantId !== null && (
             <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
               <button
                 className="rounded-md border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-100"
@@ -467,6 +635,19 @@ export function Dashboard() {
                   {data.schedule ? "Update schedule" : "Create schedule"}
                 </button>
               )}
+              <span className="ml-auto">
+                {savingTemplate ? (
+                  <SaveTemplate onSave={saveTemplate} onCancel={() => setSavingTemplate(false)} />
+                ) : (
+                  <button
+                    className="text-slate-600 hover:underline"
+                    onClick={() => setSavingTemplate(true)}
+                    title="Reuse this week's shifts and needs on another week"
+                  >
+                    Save week as template
+                  </button>
+                )}
+              </span>
             </div>
           )}
 
@@ -495,7 +676,22 @@ export function Dashboard() {
             />
           )}
 
-          {data && (
+          {data && data.shifts.length === 0 && !editing && !busy && (
+            <EmptyWeek
+              lastWeekShifts={data.lastWeekShifts}
+              templates={data.templates}
+              onAdd={() => {
+                setNotice(null);
+                setError(null);
+                setEditing({});
+              }}
+              onCopyLastWeek={copyLastWeek}
+              onUseTemplate={useTemplate}
+              onDeleteTemplate={deleteTemplate}
+            />
+          )}
+
+          {data && data.shifts.length > 0 && (
             <WeekView
               week={week}
               shifts={data.shifts}

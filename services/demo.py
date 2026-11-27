@@ -39,7 +39,7 @@ def seed_demo_restaurant(
 
     scenario = generate_restaurant_scenario(employee_count, seed=seed, start_date=week_start)
 
-    restaurant = db.Restaurant(name=name, timezone=DEMO_TIMEZONE)
+    restaurant = db.Restaurant(name=name, timezone=DEMO_TIMEZONE, is_demo=True)
     session.add(restaurant)
     session.flush()
 
