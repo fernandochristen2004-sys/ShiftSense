@@ -1,0 +1,78 @@
+# Runs on every push and pull request: the API test suite against a real
+# Postgres database, and the dashboard's lint, type check and build.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch cancels the run it replaces.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: shiftsense
+          POSTGRES_PASSWORD: shiftsense_dev
+          POSTGRES_DB: shiftsense_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shiftsense"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      SHIFTSENSE_TEST_DATABASE_URL: postgresql+psycopg://shiftsense:shiftsense_dev@localhost:5432/shiftsense_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-xdist
+
+      - name: Run tests
+        run: python -m pytest -q -n auto
+
+  web:
+    name: Dashboard checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build

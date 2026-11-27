@@ -1,5 +1,7 @@
 # ShiftSense
 
+[![tests](https://github.com/fernandochristen2004-sys/ShiftSense/actions/workflows/tests.yml/badge.svg)](https://github.com/fernandochristen2004-sys/ShiftSense/actions/workflows/tests.yml)
+
 **Restaurant scheduling that recovers from last-minute call-outs.**
 
 When someone calls in sick, most scheduling apps post an open shift and hope someone
