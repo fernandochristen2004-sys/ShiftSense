@@ -18,7 +18,7 @@ import {
   type Schedule,
   type Shift,
 } from "@/lib/api";
-import { addDays, formatDate, formatDay, hhmm } from "@/lib/dates";
+import { addDays, formatDate, formatDay, showTime } from "@/lib/dates";
 
 import { ShiftEditor } from "./shift-editor";
 import { StaffPage } from "./staff";
@@ -936,7 +936,8 @@ function WeekView({
                 <td className="p-2">
                   <div className="font-medium">{slot.name}</div>
                   <div className="text-xs text-slate-500">
-                    {slot.start}–{slot.end}
+                    <span className="whitespace-nowrap">{showTime(slot.start)}</span>–
+                    <span className="whitespace-nowrap">{showTime(slot.end)}</span>
                   </div>
                 </td>
                 {days.map((day) => {
@@ -1369,7 +1370,7 @@ function blockerMessage(blockers: Blocker[], shifts: Shift[]): string {
   const parts = blockers.slice(0, 3).map((b) => {
     const shift = byId.get(b.shift_id);
     const where = shift
-      ? `${shiftName(shift)} (${hhmm(shift.local_start)}–${hhmm(shift.local_end)})`
+      ? `${shiftName(shift)} (${showTime(shift.local_start)}–${showTime(shift.local_end)})`
       : "A shift";
     const free =
       b.available === 0

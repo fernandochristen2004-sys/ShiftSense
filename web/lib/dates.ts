@@ -32,9 +32,23 @@ export const WEEKDAYS = [
   "Sunday",
 ];
 
-/** "17:00:00" or "17:00" -> "17:00". */
+/** "17:00:00" or "17:00" -> "17:00" (for forms and comparisons). */
 export function hhmm(time: string): string {
   return time.slice(0, 5);
+}
+
+// The browser's own time format, so text matches its time boxes:
+// "3:00 PM" where they show AM/PM, "15:00" where they're 24-hour.
+const timeFormat = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "UTC",
+});
+
+/** "15:00" or "15:00:00" -> "3:00 PM" or "15:00", the way this browser shows times. */
+export function showTime(time: string): string {
+  const [hours, minutes] = time.split(":").map(Number);
+  return timeFormat.format(new Date(Date.UTC(2000, 0, 1, hours, minutes)));
 }
 
 export const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -65,7 +79,7 @@ export function describeWindow(
       : `${SHORT_DAYS[(weekday + 1) % 7]} `;
   const hours = Math.round((length / 60) * 10) / 10;
   return {
-    text: `${day}${hhmm(start)} → ${endDay}${hhmm(end)} · ${hours} h`,
+    text: `${day}${showTime(start)} → ${endDay}${showTime(end)} · ${hours} h`,
     hours,
     overnight,
   };

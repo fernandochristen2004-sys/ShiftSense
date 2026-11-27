@@ -11,7 +11,7 @@ import {
   type Skill,
   type WeeklyRule,
 } from "@/lib/api";
-import { describeWindow, formatDate, hhmm, LONG_HOURS, WEEKDAYS } from "@/lib/dates";
+import { describeWindow, formatDate, hhmm, LONG_HOURS, showTime, WEEKDAYS } from "@/lib/dates";
 
 /** The Staff tab: who works here, their roles, hours and availability. */
 export function StaffPage({ restaurantId }: { restaurantId: number }) {
@@ -549,7 +549,7 @@ function DaysOff({
               <span className="w-28 font-medium">{formatDate(x.date)}</span>
               <span className="grow">
                 {x.available
-                  ? `Only ${x.intervals.map((i) => `${hhmm(i.start_time)}–${hhmm(i.end_time)}`).join(", ")}`
+                  ? `Only ${x.intervals.map((i) => `${showTime(i.start_time)}–${showTime(i.end_time)}`).join(", ")}`
                   : "Off all day"}
                 {x.note && <span className="text-slate-500"> · {x.note}</span>}
               </span>
