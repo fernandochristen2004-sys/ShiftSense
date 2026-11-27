@@ -4,9 +4,11 @@ Error codes are listed in api/errors.py.
 """
 
 from datetime import date
+
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
+from api.auth import require_restaurant_access
 from api.deps import get_session
 from api.errors import error, service_errors
 from api.staff_schemas import (
@@ -39,7 +41,11 @@ from services.staff import (
     update_employee,
 )
 
-router = APIRouter(prefix="/restaurants", tags=["staff"])
+router = APIRouter(
+    prefix="/restaurants",
+    tags=["staff"],
+    dependencies=[Depends(require_restaurant_access)],  # members only
+)
 
 # A field that must have a value: null makes no sense for it.
 REQUIRED_ON_UPDATE = ("display_name", "max_hours", "skills", "status")

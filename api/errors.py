@@ -3,6 +3,7 @@
 Errors come back as {"detail": {"code": ..., "message": ...}} so a
 dashboard can react to the code:
     404 not_found               the restaurant, schedule, employee ... doesn't exist
+    401 unauthorized            not logged in, or a wrong email or password
     409 conflict                clashes with existing data (e.g. a duplicate name)
     409 stale                   someone changed the schedule; reload
     409 shortages_not_accepted  ask the manager to confirm, then resend
@@ -18,6 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
+from services.accounts import AuthError
 from services.errors import ConflictError
 from services.scheduling import ShortagesNotAcceptedError, StaleScheduleError
 
@@ -31,6 +33,8 @@ def service_errors() -> Iterator[None]:
     """Turn service exceptions into HTTP errors. Order matters: specific first."""
     try:
         yield
+    except AuthError as exc:
+        raise error(401, "unauthorized", str(exc)) from exc
     except LookupError as exc:
         raise error(404, "not_found", str(exc)) from exc
     except ConflictError as exc:

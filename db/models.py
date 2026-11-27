@@ -509,3 +509,53 @@ class ShiftTemplate(Base):
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (UniqueConstraint("restaurant_id", "name"),)
+
+
+# Accounts
+
+class User(Base):
+    """Someone who can log in. Guests try the demo without an email or password."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = _id()
+    email: Mapped[str | None] = mapped_column(Text, unique=True, comment="Stored lower-case")
+    password_hash: Mapped[str | None] = mapped_column(Text, comment="Argon2; never the password")
+    is_guest: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        CheckConstraint(
+            "is_guest OR (email IS NOT NULL AND password_hash IS NOT NULL)",
+            name="real_users_have_a_login",
+        ),
+    )
+
+
+class UserSession(Base):
+    """A logged-in browser. Only a SHA-256 of the cookie's token is stored."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = _id()
+    token_hash: Mapped[str] = mapped_column(Text, unique=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = _created_at()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Membership(Base):
+    """Who can manage which restaurant. Today each account has one; teams come later."""
+
+    __tablename__ = "memberships"
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    restaurant_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("restaurants.id", ondelete="RESTRICT"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(Text, server_default=text("'owner'"))
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (CheckConstraint("role IN ('owner', 'manager')", name="known_role"),)

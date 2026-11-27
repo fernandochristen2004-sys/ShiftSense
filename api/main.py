@@ -19,6 +19,7 @@ from api.schemas import (
     RepairResponse,
     ScheduleResponse,
 )
+from api.auth import router as auth_router
 from api.errors import validation_error_handler
 from api.restaurants import router as restaurants_router
 from api.shifts import router as shifts_router
@@ -39,7 +40,9 @@ app.add_middleware(
     allow_origins=[origin.strip() for origin in CORS_ORIGINS if origin.strip()],
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["Content-Type"],
+    allow_credentials=True,  # the login cookie
 )
+app.include_router(auth_router)
 app.include_router(restaurants_router)
 app.include_router(staff_router)
 app.include_router(shifts_router)

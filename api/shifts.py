@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.auth import require_restaurant_access
 from api.deps import get_session
 from api.errors import error, service_errors
 from api.shift_schemas import (
@@ -34,7 +35,11 @@ from services.week_plans import (
 )
 from services.weeks import week_bounds
 
-router = APIRouter(prefix="/restaurants", tags=["shifts"])
+router = APIRouter(
+    prefix="/restaurants",
+    tags=["shifts"],
+    dependencies=[Depends(require_restaurant_access)],  # members only
+)
 
 REQUIRED_ON_UPDATE = ("local_date", "start_time", "end_time", "requirements")
 

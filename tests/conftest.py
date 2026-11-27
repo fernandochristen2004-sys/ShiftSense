@@ -2,11 +2,16 @@
 
 Database tests use a separate database, shiftsense_test, so they never touch
 your real data. Set SHIFTSENSE_TEST_DATABASE_URL to use a different one.
-If the database isn't reachable, database tests are skipped with a reason.
+If the database isn't reachable, database tests are skipped with a reason
+(except in CI, where that's an error, so a broken setup can't look green).
 
 Tests can run in parallel with `pytest -n auto` (pytest-xdist). Each worker
 then gets its own copy, shiftsense_test_gw0, shiftsense_test_gw1, ..., made
 on first use, because every run wipes and rebuilds its test database.
+
+API tests run as a user who can see every restaurant, so they can focus on
+what they test. Login itself is tested with the real checks: a test module
+opts in with REAL_AUTH = True.
 """
 
 import os
@@ -66,6 +71,8 @@ def db_engine():
         with engine.connect() as connection:
             connection.execute(text("select 1"))
     except OperationalError:
+        if os.environ.get("CI"):  # set by GitHub Actions: never pass by skipping
+            raise
         pytest.skip(
             "Test database not reachable. Start it with `docker compose up -d` "
             "and create it once with `docker exec shiftsense-db createdb -U "
@@ -93,3 +100,17 @@ def db(db_engine):
     session.close()
     transaction.rollback()
     connection.close()
+
+
+@pytest.fixture(autouse=True)
+def open_access(request):
+    """Let API tests reach every restaurant without logging in (see REAL_AUTH)."""
+    if getattr(request.module, "REAL_AUTH", False):
+        yield
+        return
+    from api.auth import Access, get_access
+    from api.main import app
+
+    app.dependency_overrides[get_access] = lambda: Access(user_id=None, restaurant_ids=None)
+    yield
+    app.dependency_overrides.pop(get_access, None)

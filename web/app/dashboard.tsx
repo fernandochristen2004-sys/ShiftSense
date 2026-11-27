@@ -18,9 +18,11 @@ import {
   type Schedule,
   type Shift,
   type Template,
+  type User,
 } from "@/lib/api";
 import { addDays, formatDate, formatDay, shiftCount, showTime, thisMonday } from "@/lib/dates";
 
+import { AuthScreen } from "./auth";
 import { Checklist, EmptyWeek, SaveTemplate } from "./getting-started";
 import { SetupScreen } from "./setup";
 import { ShiftEditor } from "./shift-editor";
@@ -58,6 +60,8 @@ type RiskLookup = Map<string, CalloutRisk>;
 
 export function Dashboard() {
   const [tab, setTab] = useState<"schedule" | "staff">("schedule");
+  const [user, setUser] = useState<User | null | undefined>(undefined); // undefined = checking
+  const [signingUp, setSigningUp] = useState(false); // a guest choosing to sign up
   // A manager has one restaurant ("mine"); the demo bistro is a separate place to try things.
   const [mine, setMine] = useState<Restaurant | null>(null);
   const [demo, setDemo] = useState<Restaurant | null>(null); // set while in the demo
@@ -83,8 +87,23 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Open on your restaurant: the newest one that isn't a demo. None yet: setup.
+  // Who's logged in? Nobody: the login screen.
   useEffect(() => {
+    api
+      .me()
+      .then(setUser)
+      .catch((e: ApiError) => {
+        setUser(null);
+        if (e.status !== 401) setError(e.message);
+      });
+  }, []);
+
+  // Once logged in, open on your restaurant: the newest one that isn't a demo.
+  // None yet: setup (a guest goes straight to their demo instead).
+  const userId = user?.id;
+  const isGuest = user?.is_guest ?? false;
+  useEffect(() => {
+    if (userId === undefined) return;
     api
       .restaurants()
       .then((list) => {
@@ -93,12 +112,16 @@ export function Dashboard() {
         if (own) {
           setRestaurantId(own.id);
           setWeek(thisMonday());
+        } else if (isGuest) {
+          openDemo(false);
         } else {
           setSetup(true);
         }
       })
-      .catch((e: ApiError) => setError(e.message));
-  }, []);
+      .catch(handleError);
+    // openDemo and handleError only use setters; re-running for them isn't wanted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, isGuest]);
 
   // Load the week's shifts and published schedule when the selection changes,
   // and again on coming back to the schedule (staff may have changed meanwhile).
@@ -129,7 +152,7 @@ export function Dashboard() {
           });
         }
       })
-      .catch((e: ApiError) => !cancelled && setError(e.message));
+      .catch((e: ApiError) => !cancelled && handleError(e));
 
     return () => {
       cancelled = true;
@@ -420,6 +443,54 @@ export function Dashboard() {
     });
   }
 
+  /** Errors from loading: a logged-out session goes back to the login screen. */
+  function handleError(e: ApiError) {
+    if (e.status === 401) setUser(null);
+    else setError(e.message);
+  }
+
+  /** Forget everything about the last account. */
+  function resetAll() {
+    setMine(null);
+    setDemo(null);
+    setRestaurantId(null);
+    setData(null);
+    setSetup(false);
+    setSigningUp(false);
+    setTab("schedule");
+    setError(null);
+    setNotice(null);
+  }
+
+  async function logOut() {
+    await api.logOut().catch(() => undefined); // logged out either way
+    resetAll();
+    setUser(null);
+  }
+
+  async function tryAsGuest() {
+    setError(null);
+    try {
+      resetAll();
+      setUser(await api.guest()); // the effect above then opens their demo
+    } catch (e) {
+      setError((e as ApiError).message);
+    }
+  }
+
+  function loggedIn(next: User) {
+    const wasGuest = user?.is_guest;
+    setSigningUp(false);
+    if (wasGuest && !next.is_guest) {
+      // Signed up from the demo: keep it, and set up their own restaurant next.
+      setUser(next);
+      leaveDemo();
+      return;
+    }
+    resetAll();
+    setUser(next);
+  }
+
   async function openDemo(reset: boolean) {
     setBusy(reset ? "Making a fresh demo…" : "Opening the demo…");
     setError(null);
@@ -451,20 +522,50 @@ export function Dashboard() {
   const restaurant = demo ?? mine;
   const reviewing = proposal !== null || update !== null;
 
+  if (user === undefined) {
+    return <p className="p-10 text-center text-sm text-slate-500">Loading…</p>;
+  }
+  if (user === null || signingUp) {
+    return (
+      <main className="p-6">
+        {error && <p className="mx-auto mb-4 max-w-sm text-center text-sm text-red-700">{error}</p>}
+        <AuthScreen
+          key={signingUp ? "signup" : "login"}
+          initialMode={signingUp ? "signup" : "login"}
+          guest={signingUp}
+          onDone={loggedIn}
+          onTryDemo={signingUp ? undefined : tryAsGuest}
+          onCancel={signingUp ? () => setSigningUp(false) : undefined}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto max-w-7xl p-6">
       {demo && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">
           <span className="grow">
-            You&apos;re in the demo: a made-up bistro to try things out.
+            {user?.is_guest
+              ? "You're trying ShiftSense as a guest. Sign up to keep your work and set up your own restaurant."
+              : "You're in the demo: a made-up bistro to try things out."}
             {mine && ` Nothing here touches ${mine.name}.`}
           </span>
-          <button
-            className="rounded-md border border-amber-400 bg-white px-3 py-1 hover:bg-amber-100"
-            onClick={leaveDemo}
-          >
-            ← {mine ? `Back to ${mine.name}` : "Back to setup"}
-          </button>
+          {user?.is_guest ? (
+            <button
+              className="rounded-md bg-slate-900 px-3 py-1 font-medium text-white hover:bg-slate-700"
+              onClick={() => setSigningUp(true)}
+            >
+              Sign up
+            </button>
+          ) : (
+            <button
+              className="rounded-md border border-amber-400 bg-white px-3 py-1 hover:bg-amber-100"
+              onClick={leaveDemo}
+            >
+              ← {mine ? `Back to ${mine.name}` : "Back to setup"}
+            </button>
+          )}
           <button
             className="rounded-md border border-amber-400 bg-white px-3 py-1 hover:bg-amber-100"
             onClick={() => openDemo(true)}
@@ -535,6 +636,16 @@ export function Dashboard() {
               </button>
             </div>
           )}
+
+          <span className="flex items-center gap-2 text-sm text-slate-500">
+            {user?.is_guest ? "Guest" : user?.email}
+            <button
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-100"
+              onClick={logOut}
+            >
+              {user?.is_guest ? "Leave" : "Log out"}
+            </button>
+          </span>
         </div>
       </header>
 

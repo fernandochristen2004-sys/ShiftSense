@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.convert import schedule_changes
+from api.auth import Access, get_access, require_restaurant_access
 from api.deps import get_session
 from api.errors import service_errors
 from api.schemas import ShortageOut
@@ -57,7 +58,11 @@ from services.scheduling import (
 )
 from services.weeks import week_bounds
 
-router = APIRouter(prefix="/restaurants", tags=["restaurants"])
+router = APIRouter(
+    prefix="/restaurants",
+    tags=["restaurants"],
+    dependencies=[Depends(require_restaurant_access)],  # members only
+)
 
 
 # Building responses
@@ -218,34 +223,44 @@ def _restaurant_out(restaurant: db.Restaurant) -> RestaurantOut:
 
 
 @router.get("", response_model=list[RestaurantOut])
-def list_restaurants(session: Session = Depends(get_session)) -> list[RestaurantOut]:
-    """Every restaurant, oldest first."""
-    restaurants = session.scalars(select(db.Restaurant).order_by(db.Restaurant.id)).all()
-    return [_restaurant_out(restaurant) for restaurant in restaurants]
+def list_restaurants(
+    session: Session = Depends(get_session), access: Access = Depends(get_access)
+) -> list[RestaurantOut]:
+    """Your restaurants (including your demo), oldest first."""
+    query = select(db.Restaurant).order_by(db.Restaurant.id)
+    if access.restaurant_ids is not None:
+        query = query.where(db.Restaurant.id.in_(access.restaurant_ids))
+    return [_restaurant_out(restaurant) for restaurant in session.scalars(query)]
 
 
 @router.post("", response_model=RestaurantOut, status_code=status.HTTP_201_CREATED)
 def add_restaurant(
-    request: RestaurantIn, session: Session = Depends(get_session)
+    request: RestaurantIn,
+    session: Session = Depends(get_session),
+    access: Access = Depends(get_access),
 ) -> RestaurantOut:
     """Start an empty restaurant: its name, timezone and roles. Staff and shifts come next."""
     with service_errors():
-        restaurant = create_restaurant(session, request.name, request.timezone, request.roles)
+        restaurant = create_restaurant(
+            session, request.name, request.timezone, request.roles, owner_id=access.user_id
+        )
         session.commit()
         return _restaurant_out(restaurant)
 
 
 @router.post("/demo", response_model=RestaurantOut)
 def open_demo_restaurant(
-    reset: bool = False, session: Session = Depends(get_session)
+    reset: bool = False,
+    session: Session = Depends(get_session),
+    access: Access = Depends(get_access),
 ) -> RestaurantOut:
-    """The demo bistro: 25 staff and a week of shifts (week of 23 Nov 2026), to try things out.
+    """Your demo bistro: 25 staff and a week of shifts (week of 23 Nov 2026), to try things out.
 
-    There's one demo. This returns it, making it the first time; reset=true
-    starts a fresh copy (older copies are kept but no longer used).
+    Each account has its own demo. This returns it, making it the first time;
+    reset=true starts a fresh copy (older copies are kept but no longer used).
     """
     with service_errors():
-        restaurant = create_demo(session, reset=reset)
+        restaurant = create_demo(session, reset=reset, owner_id=access.user_id)
         session.commit()
         return _restaurant_out(restaurant)
 

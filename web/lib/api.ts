@@ -1,7 +1,11 @@
 // Talks to the ShiftSense API. Types mirror api/stored_schemas.py,
 // api/staff_schemas.py and api/shift_schemas.py.
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+// Through the dashboard's own /api proxy (next.config.ts), so the login cookie
+// is sent with every request.
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
+
+export type User = { id: number; email: string | null; is_guest: boolean };
 
 export type Restaurant = { id: number; name: string; timezone: string; is_demo: boolean };
 
@@ -67,7 +71,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
   } catch {
-    throw new ApiError(0, "offline", `Can't reach the API at ${API_URL}. Is uvicorn running?`);
+    throw new ApiError(0, "offline", "Can't reach ShiftSense. Check your connection.");
   }
 
   if (!response.ok) {
@@ -75,6 +79,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = body?.detail;
     if (detail && typeof detail === "object" && "code" in detail) {
       throw new ApiError(response.status, detail.code, detail.message);
+    }
+    if (response.status >= 500) {
+      throw new ApiError(
+        response.status,
+        "server",
+        "The ShiftSense server didn't answer. Is uvicorn running?",
+      );
     }
     throw new ApiError(response.status, "error", `Request failed (${response.status}).`);
   }
@@ -348,4 +359,11 @@ export const api = {
     }),
   deleteTemplate: (restaurantId: number, templateId: number) =>
     request<void>(`/restaurants/${restaurantId}/templates/${templateId}`, { method: "DELETE" }),
+
+  // Accounts
+  me: () => request<User>("/auth/me"),
+  signUp: (email: string, password: string) => post<User>("/auth/signup", { email, password }),
+  logIn: (email: string, password: string) => post<User>("/auth/login", { email, password }),
+  guest: () => post<User>("/auth/guest"),
+  logOut: () => post<void>("/auth/logout"),
 };
